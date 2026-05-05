@@ -554,13 +554,11 @@ dependencies = [
  "clap",
  "dirs",
  "rusqlite",
- "serde",
  "sha2",
  "tempfile",
  "thiserror",
  "tokio",
  "zbus",
- "zvariant",
 ]
 
 [[package]]

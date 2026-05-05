@@ -84,6 +84,42 @@ pub struct LocusClient<'a> {
     proxy: GraphProxy<'a>,
 }
 
+pub type Client<'a> = LocusClient<'a>;
+
+#[derive(Debug, Clone)]
+pub struct ProjectSpec<'a> {
+    pub path: &'a str,
+    pub name: Option<&'a str>,
+    pub icon: Option<&'a str>,
+    pub durable: bool,
+}
+
+impl<'a> ProjectSpec<'a> {
+    pub fn new(path: &'a str) -> Self {
+        Self {
+            path,
+            name: None,
+            icon: None,
+            durable: false,
+        }
+    }
+
+    pub fn name(mut self, name: &'a str) -> Self {
+        self.name = Some(name);
+        self
+    }
+
+    pub fn icon(mut self, icon: &'a str) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    pub fn durable(mut self) -> Self {
+        self.durable = true;
+        self
+    }
+}
+
 impl<'a> LocusClient<'a> {
     pub async fn new(connection: &'a zbus::Connection) -> zbus::Result<Self> {
         Ok(Self {
@@ -163,6 +199,11 @@ impl<'a> LocusClient<'a> {
                 icon.unwrap_or(NONE_STRING),
                 durable,
             )
+            .await
+    }
+
+    pub async fn ensure_project_spec(&self, spec: ProjectSpec<'_>) -> zbus::Result<String> {
+        self.ensure_project(spec.path, spec.name, spec.icon, spec.durable)
             .await
     }
 
