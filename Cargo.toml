@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["cli", "server"]
-cli = ["server", "dep:anyhow", "dep:clap", "dep:niri-ipc", "dep:tokio"]
+cli = ["server", "dep:anyhow", "dep:clap", "dep:futures-util", "dep:niri-ipc", "dep:tokio"]
 server = [
     "dep:camino",
     "dep:dirs",
@@ -20,6 +20,7 @@ anyhow = { version = "1.0.100", optional = true }
 camino = { version = "1.2.2", optional = true }
 clap = { version = "4.5.56", features = ["derive"], optional = true }
 dirs = { version = "6.0.0", optional = true }
+futures-util = { version = "0.3.32", optional = true }
 rusqlite = { version = "0.37.0", features = ["bundled"], optional = true }
 niri-ipc = { version = "=25.11.0", optional = true }
 sha2 = { version = "0.10.9", optional = true }
