@@ -55,6 +55,7 @@ enum LinkCommand {
     Targets(LinkQuery),
     Sources(LinkQuery),
     List { subject: String },
+    All,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -192,6 +193,11 @@ async fn main() -> anyhow::Result<()> {
             }
             LinkCommand::List { subject } => {
                 for (source, relation, target) in client.links(&subject).await? {
+                    println!("{source}\t{relation}\t{target}");
+                }
+            }
+            LinkCommand::All => {
+                for (source, relation, target) in client.all_links().await? {
                     println!("{source}\t{relation}\t{target}");
                 }
             }

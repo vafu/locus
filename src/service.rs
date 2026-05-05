@@ -129,6 +129,11 @@ impl LocusService {
             .collect())
     }
 
+    pub fn all_links(&self) -> Result<Vec<Link>, ServiceError> {
+        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        Ok(inner.state.links().into_iter().collect())
+    }
+
     pub fn set_property(
         &self,
         subject: &str,
@@ -336,6 +341,28 @@ mod tests {
         assert_eq!(
             service.context_targets("active", "project").unwrap(),
             vec!["project:b"]
+        );
+    }
+
+    #[test]
+    fn all_links_returns_durable_and_ephemeral_links() {
+        let (_tmp, service) = service();
+        service.add_link("a", "durable", "b", true).unwrap();
+        service.add_link("b", "ephemeral", "c", false).unwrap();
+
+        let links = service
+            .all_links()
+            .unwrap()
+            .into_iter()
+            .map(|link| link.to_tuple())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            links,
+            vec![
+                ("a".to_string(), "durable".to_string(), "b".to_string()),
+                ("b".to_string(), "ephemeral".to_string(), "c".to_string()),
+            ]
         );
     }
 }

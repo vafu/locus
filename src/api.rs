@@ -33,6 +33,8 @@ pub trait Graph {
 
     fn get_links(&self, subject: &str) -> zbus::Result<Vec<LinkTuple>>;
 
+    fn get_all_links(&self) -> zbus::Result<Vec<LinkTuple>>;
+
     fn set_property(
         &self,
         subject: &str,
@@ -160,6 +162,10 @@ impl<'a> LocusClient<'a> {
 
     pub async fn links(&self, subject: &str) -> zbus::Result<Vec<LinkTuple>> {
         self.proxy.get_links(subject).await
+    }
+
+    pub async fn all_links(&self) -> zbus::Result<Vec<LinkTuple>> {
+        self.proxy.get_all_links().await
     }
 
     pub async fn set_property(

@@ -98,6 +98,16 @@ impl GraphIface {
             .collect())
     }
 
+    async fn get_all_links(&self) -> zbus::fdo::Result<Vec<(String, String, String)>> {
+        Ok(self
+            .service
+            .all_links()
+            .map_err(to_fdo)?
+            .into_iter()
+            .map(|link| link.to_tuple())
+            .collect())
+    }
+
     async fn set_property(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
