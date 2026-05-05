@@ -31,6 +31,7 @@ enum Command {
         #[command(subcommand)]
         command: ContextCommand,
     },
+    Resolve(ResolveArgs),
     Watch(WatchArgs),
 }
 
@@ -51,8 +52,6 @@ struct LinkAdd {
     source: String,
     relation: String,
     target: String,
-    #[arg(long)]
-    durable: bool,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -90,8 +89,6 @@ struct PropSet {
     subject: String,
     key: String,
     value: String,
-    #[arg(long)]
-    durable: bool,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -125,8 +122,6 @@ struct ContextSet {
     name: String,
     relation: String,
     target: String,
-    #[arg(long)]
-    durable: bool,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -135,6 +130,12 @@ struct ContextGet {
     relation: String,
     #[arg(long)]
     first: bool,
+}
+
+#[derive(Debug, ClapArgs)]
+struct ResolveArgs {
+    source: String,
+    kind: String,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -246,12 +247,12 @@ async fn main() -> anyhow::Result<()> {
         Command::Link { command } => match command {
             LinkCommand::Add(args) => {
                 client
-                    .add_link(&args.source, &args.relation, &args.target, args.durable)
+                    .add_link(&args.source, &args.relation, &args.target)
                     .await?;
             }
             LinkCommand::Set(args) => {
                 client
-                    .set_link(&args.source, &args.relation, &args.target, args.durable)
+                    .set_link(&args.source, &args.relation, &args.target)
                     .await?;
             }
             LinkCommand::Remove(args) => {
@@ -288,7 +289,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Prop { command } => match command {
             PropCommand::Set(args) => {
                 client
-                    .set_property(&args.subject, &args.key, &args.value, args.durable)
+                    .set_property(&args.subject, &args.key, &args.value)
                     .await?;
             }
             PropCommand::Get(args) => {
@@ -324,7 +325,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Context { command } => match command {
             ContextCommand::Set(args) => {
                 client
-                    .set_context_link(&args.name, &args.relation, &args.target, args.durable)
+                    .set_context_link(&args.name, &args.relation, &args.target)
                     .await?;
             }
             ContextCommand::Get(args) => {
@@ -334,6 +335,11 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         },
+        Command::Resolve(args) => {
+            if let Some(subject) = client.resolve(&args.source, &args.kind).await? {
+                println!("{subject}");
+            }
+        }
         Command::Watch(args) => watch(&connection, &client, args).await?,
     }
 

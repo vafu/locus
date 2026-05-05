@@ -23,21 +23,9 @@ pub type GraphProxy<'a> = GraphIfaceProxy<'a>;
     async_name = "GraphProxy"
 )]
 pub trait Graph {
-    fn add_link(
-        &self,
-        source: &str,
-        relation: &str,
-        target: &str,
-        durable: bool,
-    ) -> zbus::fdo::Result<()>;
+    fn add_link(&self, source: &str, relation: &str, target: &str) -> zbus::fdo::Result<()>;
 
-    fn set_link(
-        &self,
-        source: &str,
-        relation: &str,
-        target: &str,
-        durable: bool,
-    ) -> zbus::fdo::Result<()>;
+    fn set_link(&self, source: &str, relation: &str, target: &str) -> zbus::fdo::Result<()>;
 
     fn remove_link(&self, source: &str, relation: &str, target: &str) -> zbus::fdo::Result<()>;
 
@@ -51,13 +39,7 @@ pub trait Graph {
 
     fn get_all_links(&self) -> zbus::fdo::Result<Vec<LinkTuple>>;
 
-    fn set_property(
-        &self,
-        subject: &str,
-        key: &str,
-        value: &str,
-        durable: bool,
-    ) -> zbus::fdo::Result<()>;
+    fn set_property(&self, subject: &str, key: &str, value: &str) -> zbus::fdo::Result<()>;
 
     fn remove_property(&self, subject: &str, key: &str) -> zbus::fdo::Result<()>;
 
@@ -68,6 +50,10 @@ pub trait Graph {
     fn get_subjects(&self) -> zbus::fdo::Result<Vec<String>>;
 
     fn find_subjects(&self, key: &str, value: &str) -> zbus::fdo::Result<Vec<String>>;
+
+    fn resolve(&self, source: &str, kind: &str) -> zbus::fdo::Result<String>;
+
+    fn subscribe_resolve(&self, source: &str, kind: &str) -> zbus::fdo::Result<String>;
 
     #[zbus(signal)]
     fn link_added(&self, source: String, relation: String, target: String) -> zbus::Result<()>;
@@ -89,6 +75,9 @@ pub trait Graph {
 
     #[zbus(signal)]
     fn property_removed(&self, subject: String, key: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn resolve_changed(&self, source: String, kind: String, target: String) -> zbus::Result<()>;
 }
 
 pub struct LocusClient<'a> {
@@ -109,9 +98,8 @@ impl<'a> LocusClient<'a> {
         source: &str,
         relation: &str,
         target: &str,
-        durable: bool,
     ) -> zbus::fdo::Result<()> {
-        self.proxy.add_link(source, relation, target, durable).await
+        self.proxy.add_link(source, relation, target).await
     }
 
     pub async fn set_link(
@@ -119,9 +107,8 @@ impl<'a> LocusClient<'a> {
         source: &str,
         relation: &str,
         target: &str,
-        durable: bool,
     ) -> zbus::fdo::Result<()> {
-        self.proxy.set_link(source, relation, target, durable).await
+        self.proxy.set_link(source, relation, target).await
     }
 
     pub async fn remove_link(
@@ -158,9 +145,8 @@ impl<'a> LocusClient<'a> {
         subject: &str,
         key: &str,
         value: &str,
-        durable: bool,
     ) -> zbus::fdo::Result<()> {
-        self.proxy.set_property(subject, key, value, durable).await
+        self.proxy.set_property(subject, key, value).await
     }
 
     pub async fn remove_property(&self, subject: &str, key: &str) -> zbus::fdo::Result<()> {
@@ -190,15 +176,28 @@ impl<'a> LocusClient<'a> {
             .await
     }
 
+    pub async fn resolve(&self, source: &str, kind: &str) -> zbus::fdo::Result<Option<String>> {
+        let value = self.proxy.resolve(source, kind).await?;
+        Ok((value != NONE_STRING).then_some(value))
+    }
+
+    pub async fn subscribe_resolve(
+        &self,
+        source: &str,
+        kind: &str,
+    ) -> zbus::fdo::Result<Option<String>> {
+        let value = self.proxy.subscribe_resolve(source, kind).await?;
+        Ok((value != NONE_STRING).then_some(value))
+    }
+
     pub async fn set_context_link(
         &self,
         context: &str,
         relation: &str,
         target: &str,
-        durable: bool,
     ) -> zbus::fdo::Result<()> {
         self.proxy
-            .set_link(&context_subject(context), relation, target, durable)
+            .set_link(&context_subject(context), relation, target)
             .await
     }
 

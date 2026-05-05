@@ -3,7 +3,7 @@ use zbus::Connection;
 use zbus::connection::Builder;
 use zbus::object_server::SignalEmitter;
 
-use crate::service::{LocusService, ServiceError};
+use crate::service::{LinkChange, LinkSetChange, LocusService, PropertyChange, ServiceError};
 
 fn to_fdo(error: ServiceError) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(error.to_string())
@@ -36,18 +36,22 @@ impl GraphIface {
         source: &str,
         relation: &str,
         target: &str,
-        durable: bool,
     ) -> zbus::fdo::Result<()> {
-        eprintln!(
-            "locusd: AddLink source={source:?} relation={relation:?} target={target:?} durable={durable}"
-        );
-        let link = self
+        eprintln!("locusd: AddLink source={source:?} relation={relation:?} target={target:?}");
+        let change = self
             .service
-            .add_link(source, relation, target, durable)
+            .add_link(source, relation, target)
             .map_err(to_fdo)?;
-        Self::link_added(&emitter, link.source, link.relation, link.target)
-            .await
-            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        if let LinkChange::Changed(link) = change {
+            Self::link_added(&emitter, link.source, link.relation, link.target)
+                .await
+                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+            emit_resolve_changes(
+                &emitter,
+                self.service.refresh_resolutions().map_err(to_fdo)?,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -57,16 +61,21 @@ impl GraphIface {
         source: &str,
         relation: &str,
         target: &str,
-        durable: bool,
     ) -> zbus::fdo::Result<()> {
-        eprintln!(
-            "locusd: SetLink source={source:?} relation={relation:?} target={target:?} durable={durable}"
-        );
-        let (removed, added) = self
+        eprintln!("locusd: SetLink source={source:?} relation={relation:?} target={target:?}");
+        let change = self
             .service
-            .set_link(source, relation, target, durable)
+            .set_link(source, relation, target)
             .map_err(to_fdo)?;
-        emit_link_replacement(&emitter, removed, added, true).await
+        if let LinkSetChange::Changed { removed, added } = change {
+            emit_link_replacement(&emitter, removed, added, true).await?;
+            emit_resolve_changes(
+                &emitter,
+                self.service.refresh_resolutions().map_err(to_fdo)?,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn remove_link(
@@ -84,6 +93,11 @@ impl GraphIface {
         Self::link_removed(&emitter, link.source, link.relation, link.target)
             .await
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        emit_resolve_changes(
+            &emitter,
+            self.service.refresh_resolutions().map_err(to_fdo)?,
+        )
+        .await?;
         Ok(())
     }
 
@@ -98,10 +112,18 @@ impl GraphIface {
             .service
             .remove_links(source, relation)
             .map_err(to_fdo)?;
+        let changed = !links.is_empty();
         for link in links {
             Self::link_removed(&emitter, link.source, link.relation, link.target)
                 .await
                 .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        }
+        if changed {
+            emit_resolve_changes(
+                &emitter,
+                self.service.refresh_resolutions().map_err(to_fdo)?,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -140,22 +162,27 @@ impl GraphIface {
         subject: &str,
         key: &str,
         value: &str,
-        durable: bool,
     ) -> zbus::fdo::Result<()> {
-        eprintln!(
-            "locusd: SetProperty subject={subject:?} key={key:?} value={value:?} durable={durable}"
-        );
-        self.service
-            .set_property(subject, key, value, durable)
+        eprintln!("locusd: SetProperty subject={subject:?} key={key:?} value={value:?}");
+        let change = self
+            .service
+            .set_property(subject, key, value)
             .map_err(to_fdo)?;
-        Self::property_changed(
-            &emitter,
-            subject.to_string(),
-            key.to_string(),
-            value.to_string(),
-        )
-        .await
-        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        if change == PropertyChange::Changed {
+            Self::property_changed(
+                &emitter,
+                subject.to_string(),
+                key.to_string(),
+                value.to_string(),
+            )
+            .await
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+            emit_resolve_changes(
+                &emitter,
+                self.service.refresh_resolutions().map_err(to_fdo)?,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -170,6 +197,11 @@ impl GraphIface {
         Self::property_removed(&emitter, subject.to_string(), key.to_string())
             .await
             .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        emit_resolve_changes(
+            &emitter,
+            self.service.refresh_resolutions().map_err(to_fdo)?,
+        )
+        .await?;
         Ok(())
     }
 
@@ -201,6 +233,23 @@ impl GraphIface {
         self.service
             .subjects_with_property(key, wire_to_option(value))
             .map_err(to_fdo)
+    }
+
+    async fn resolve(&self, source: &str, kind: &str) -> zbus::fdo::Result<String> {
+        Ok(self
+            .service
+            .resolve_kind(source, kind)
+            .map_err(to_fdo)?
+            .unwrap_or_else(|| NONE_STRING.to_string()))
+    }
+
+    async fn subscribe_resolve(&self, source: &str, kind: &str) -> zbus::fdo::Result<String> {
+        Ok(self
+            .service
+            .subscribe_resolution(source, kind)
+            .map_err(to_fdo)?
+            .target
+            .unwrap_or_else(|| NONE_STRING.to_string()))
     }
 
     #[zbus(signal)]
@@ -242,6 +291,14 @@ impl GraphIface {
         subject: String,
         key: String,
     ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn resolve_changed(
+        emitter: &SignalEmitter<'_>,
+        source: String,
+        kind: String,
+        target: String,
+    ) -> zbus::Result<()>;
 }
 
 async fn emit_link_replacement(
@@ -274,6 +331,23 @@ async fn emit_link_replacement(
     GraphIface::link_added(emitter, added.source, added.relation, added.target)
         .await
         .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+    Ok(())
+}
+
+async fn emit_resolve_changes(
+    emitter: &SignalEmitter<'_>,
+    resolutions: Vec<crate::service::Resolution>,
+) -> zbus::fdo::Result<()> {
+    for resolution in resolutions {
+        GraphIface::resolve_changed(
+            emitter,
+            resolution.source,
+            resolution.kind,
+            resolution.target.unwrap_or_else(|| NONE_STRING.to_string()),
+        )
+        .await
+        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+    }
     Ok(())
 }
 

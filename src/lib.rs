@@ -6,8 +6,6 @@ pub mod service;
 #[cfg(feature = "server")]
 pub mod state;
 #[cfg(feature = "server")]
-pub mod storage;
-#[cfg(feature = "server")]
 pub use service::LocusService;
 
 pub use api::{Client, LinkTuple, LocusClient};

@@ -4,7 +4,7 @@ use anyhow::{Context, bail};
 use clap::Parser;
 use locus::Client;
 use niri_ipc::state::{EventStreamState, EventStreamStatePart};
-use niri_ipc::{Request, Response, socket::Socket};
+use niri_ipc::{Event, Request, Response, socket::Socket};
 use tokio::sync::mpsc;
 
 const WORKSPACE_RELATION: &str = "workspace";
@@ -22,7 +22,6 @@ struct Args {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct NiriState {
     workspace_windows: BTreeSet<(String, String)>,
-    focused_workspace: Option<String>,
     focused_window: Option<String>,
 }
 
@@ -38,9 +37,13 @@ async fn main() -> anyhow::Result<()> {
     let mut previous = NiriState::default();
 
     clear_existing_niri_edges(&client).await;
-    let mut state = EventStreamState::default();
+    let mut state = initial_niri_state().context("load initial Niri state")?;
+    let next = state_to_niri_state(&state);
+    publish_state(&client, &previous, &next).await;
+    previous = next;
+
     let mut events = niri_event_stream()?;
-    eprintln!("locus-niri: publishing Niri graph state from Niri event stream");
+    eprintln!("locus-niri: publishing Niri graph state from snapshot and event stream");
 
     loop {
         tokio::select! {
@@ -102,6 +105,31 @@ fn niri_event_stream() -> anyhow::Result<mpsc::Receiver<niri_ipc::Event>> {
     Ok(rx)
 }
 
+fn initial_niri_state() -> anyhow::Result<EventStreamState> {
+    let mut socket = Socket::connect().context("connect to Niri IPC socket")?;
+    let workspaces = match socket
+        .send(Request::Workspaces)
+        .context("request Niri workspaces")?
+    {
+        Ok(Response::Workspaces(workspaces)) => workspaces,
+        Ok(response) => bail!("unexpected Niri workspaces response: {response:?}"),
+        Err(message) => bail!("Niri rejected workspaces request: {message}"),
+    };
+    let windows = match socket
+        .send(Request::Windows)
+        .context("request Niri windows")?
+    {
+        Ok(Response::Windows(windows)) => windows,
+        Ok(response) => bail!("unexpected Niri windows response: {response:?}"),
+        Err(message) => bail!("Niri rejected windows request: {message}"),
+    };
+
+    let mut state = EventStreamState::default();
+    let _ = state.apply(Event::WorkspacesChanged { workspaces });
+    let _ = state.apply(Event::WindowsChanged { windows });
+    Ok(state)
+}
+
 async fn publish_state(client: &Client<'_>, previous: &NiriState, next: &NiriState) {
     for (workspace, window) in previous
         .workspace_windows
@@ -115,15 +143,6 @@ async fn publish_state(client: &Client<'_>, previous: &NiriState, next: &NiriSta
     {
         add_workspace_window(client, workspace, window).await;
     }
-    if previous.focused_workspace != next.focused_workspace {
-        set_or_clear_context(
-            client,
-            SELECTED_CONTEXT,
-            WORKSPACE_RELATION,
-            &next.focused_workspace,
-        )
-        .await;
-    }
     if previous.focused_window != next.focused_window {
         set_or_clear_context(
             client,
@@ -136,9 +155,9 @@ async fn publish_state(client: &Client<'_>, previous: &NiriState, next: &NiriSta
 }
 
 async fn add_workspace_window(client: &Client<'_>, workspace: &str, window: &str) {
-    let _ = client
-        .set_link(window, WORKSPACE_RELATION, workspace, false)
-        .await;
+    let _ = client.set_property(workspace, "kind", "workspace").await;
+    let _ = client.set_property(window, "kind", "window").await;
+    let _ = client.set_link(window, WORKSPACE_RELATION, workspace).await;
 }
 
 async fn remove_workspace_window(client: &Client<'_>, workspace: &str, window: &str) {
@@ -169,6 +188,17 @@ async fn clear_existing_niri_edges(client: &Client<'_>) {
     let _ = client
         .remove_links(&context_subject(SELECTED_CONTEXT), WINDOW_RELATION)
         .await;
+
+    for kind in ["window", "workspace"] {
+        let Ok(subjects) = client.find_subjects("kind", Some(kind)).await else {
+            continue;
+        };
+        for subject in subjects {
+            if subject.starts_with("niri:window:") || subject.starts_with("niri:workspace:") {
+                let _ = client.remove_property(&subject, "kind").await;
+            }
+        }
+    }
 }
 
 fn state_to_niri_state(state: &EventStreamState) -> NiriState {
@@ -187,7 +217,7 @@ fn state_to_niri_state(state: &EventStreamState) -> NiriState {
         .workspaces
         .values()
         .find(|workspace| workspace.is_focused)
-        .map(|workspace| workspace_subject(workspace.id));
+        .cloned();
     let focused_window = state
         .windows
         .windows
@@ -195,18 +225,14 @@ fn state_to_niri_state(state: &EventStreamState) -> NiriState {
         .find(|window| window.is_focused)
         .map(|window| window_subject(window.id))
         .or_else(|| {
-            state
-                .workspaces
-                .workspaces
-                .values()
-                .find(|workspace| workspace.is_focused)
+            focused_workspace
+                .as_ref()
                 .and_then(|workspace| workspace.active_window_id)
                 .map(window_subject)
         });
 
     NiriState {
         workspace_windows,
-        focused_workspace,
         focused_window,
     }
 }
@@ -231,7 +257,7 @@ async fn set_or_clear_context(
 ) {
     let source = context_subject(context);
     if let Some(target) = target {
-        let _ = client.set_link(&source, relation, target, false).await;
+        let _ = client.set_link(&source, relation, target).await;
     } else {
         let _ = client.remove_links(&source, relation).await;
     }

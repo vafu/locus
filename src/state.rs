@@ -27,28 +27,18 @@ impl Link {
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeState {
-    pub durable_links: BTreeSet<Link>,
-    pub ephemeral_links: BTreeSet<Link>,
-    pub durable_properties: BTreeMap<(String, String), String>,
-    pub ephemeral_properties: BTreeMap<(String, String), String>,
+    pub links: BTreeSet<Link>,
+    pub properties: BTreeMap<(String, String), String>,
 }
 
 impl RuntimeState {
     pub fn links(&self) -> BTreeSet<Link> {
-        self.durable_links
-            .union(&self.ephemeral_links)
-            .cloned()
-            .collect()
+        self.links.clone()
     }
 
     pub fn properties_for(&self, subject: &str) -> BTreeMap<String, String> {
         let mut properties = BTreeMap::new();
-        for ((property_subject, key), value) in &self.durable_properties {
-            if property_subject == subject {
-                properties.insert(key.clone(), value.clone());
-            }
-        }
-        for ((property_subject, key), value) in &self.ephemeral_properties {
+        for ((property_subject, key), value) in &self.properties {
             if property_subject == subject {
                 properties.insert(key.clone(), value.clone());
             }
@@ -57,12 +47,8 @@ impl RuntimeState {
     }
 
     pub fn property(&self, subject: &str, key: &str) -> Option<String> {
-        self.ephemeral_properties
+        self.properties
             .get(&(subject.to_string(), key.to_string()))
-            .or_else(|| {
-                self.durable_properties
-                    .get(&(subject.to_string(), key.to_string()))
-            })
             .cloned()
     }
 }
