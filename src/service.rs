@@ -1,10 +1,14 @@
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
 use crate::paths::{PathError, canonical_project_path};
-use crate::state::{ProjectRecord, RuntimeState, ServiceEvent};
+use crate::state::{Link, RuntimeState};
 use crate::storage::{SqliteStore, StorageError};
+
+pub const PROJECT_PREFIX: &str = "project:";
+pub const CONTEXT_PREFIX: &str = "context:";
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
@@ -30,9 +34,10 @@ pub struct LocusService {
 impl LocusService {
     pub fn new(store: SqliteStore) -> Result<Self, ServiceError> {
         let state = RuntimeState {
-            projects: store.load_projects()?,
-            workspace_bindings: store.load_workspace_bindings()?,
-            active_workspace_id: None,
+            durable_links: store.load_links()?,
+            durable_properties: store.load_properties()?,
+            ephemeral_links: Default::default(),
+            ephemeral_properties: Default::default(),
         };
 
         Ok(Self {
@@ -40,123 +45,201 @@ impl LocusService {
         })
     }
 
-    pub fn register_project(
+    pub fn add_link(
+        &self,
+        source: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> Result<Link, ServiceError> {
+        let link = Link::new(source, relation, target);
+        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        if durable {
+            inner.store.add_link(&link)?;
+            inner.state.durable_links.insert(link.clone());
+        } else {
+            inner.state.ephemeral_links.insert(link.clone());
+        }
+        Ok(link)
+    }
+
+    pub fn remove_link(
+        &self,
+        source: &str,
+        relation: &str,
+        target: &str,
+    ) -> Result<Link, ServiceError> {
+        let link = Link::new(source, relation, target);
+        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        inner.store.remove_link(&link)?;
+        inner.state.durable_links.remove(&link);
+        inner.state.ephemeral_links.remove(&link);
+        Ok(link)
+    }
+
+    pub fn remove_links(&self, source: &str, relation: &str) -> Result<Vec<Link>, ServiceError> {
+        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        let removed = inner
+            .state
+            .links()
+            .into_iter()
+            .filter(|link| link.source == source && link.relation == relation)
+            .collect::<Vec<_>>();
+        inner.store.remove_links(source, relation)?;
+        inner
+            .state
+            .durable_links
+            .retain(|link| !(link.source == source && link.relation == relation));
+        inner
+            .state
+            .ephemeral_links
+            .retain(|link| !(link.source == source && link.relation == relation));
+        Ok(removed)
+    }
+
+    pub fn targets(&self, source: &str, relation: &str) -> Result<Vec<String>, ServiceError> {
+        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        Ok(inner
+            .state
+            .links()
+            .into_iter()
+            .filter(|link| link.source == source && link.relation == relation)
+            .map(|link| link.target)
+            .collect())
+    }
+
+    pub fn sources(&self, target: &str, relation: &str) -> Result<Vec<String>, ServiceError> {
+        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        Ok(inner
+            .state
+            .links()
+            .into_iter()
+            .filter(|link| link.target == target && link.relation == relation)
+            .map(|link| link.source)
+            .collect())
+    }
+
+    pub fn links(&self, subject: &str) -> Result<Vec<Link>, ServiceError> {
+        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        Ok(inner
+            .state
+            .links()
+            .into_iter()
+            .filter(|link| link.source == subject || link.target == subject)
+            .collect())
+    }
+
+    pub fn set_property(
+        &self,
+        subject: &str,
+        key: &str,
+        value: &str,
+        durable: bool,
+    ) -> Result<(), ServiceError> {
+        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        if durable {
+            inner.store.set_property(subject, key, value)?;
+            inner
+                .state
+                .durable_properties
+                .insert((subject.to_string(), key.to_string()), value.to_string());
+        } else {
+            inner
+                .state
+                .ephemeral_properties
+                .insert((subject.to_string(), key.to_string()), value.to_string());
+        }
+        Ok(())
+    }
+
+    pub fn remove_property(&self, subject: &str, key: &str) -> Result<(), ServiceError> {
+        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        inner.store.remove_property(subject, key)?;
+        inner
+            .state
+            .durable_properties
+            .remove(&(subject.to_string(), key.to_string()));
+        inner
+            .state
+            .ephemeral_properties
+            .remove(&(subject.to_string(), key.to_string()));
+        Ok(())
+    }
+
+    pub fn property(&self, subject: &str, key: &str) -> Result<Option<String>, ServiceError> {
+        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        Ok(inner.state.property(subject, key))
+    }
+
+    pub fn properties(&self, subject: &str) -> Result<BTreeMap<String, String>, ServiceError> {
+        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        Ok(inner.state.properties_for(subject))
+    }
+
+    pub fn ensure_project(
         &self,
         path: &str,
         name: Option<&str>,
         icon: Option<&str>,
+        durable: bool,
     ) -> Result<String, ServiceError> {
-        let project_id = canonical_project_path(path)?;
-        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        inner.store.upsert_project(&project_id, name, icon)?;
-        inner
+        let canonical = canonical_project_path(path)?;
+        let subject = project_subject(&canonical);
+        self.set_property(&subject, "kind", "project", durable)?;
+        self.set_property(&subject, "path", &canonical, durable)?;
+        if let Some(name) = name {
+            self.set_property(&subject, "name", name, durable)?;
+        }
+        if let Some(icon) = icon {
+            self.set_property(&subject, "icon", icon, durable)?;
+        }
+        Ok(subject)
+    }
+
+    pub fn projects(&self) -> Result<Vec<String>, ServiceError> {
+        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        let mut projects = inner
             .state
-            .projects
-            .entry(project_id.clone())
-            .and_modify(|project| {
-                if let Some(name) = name {
-                    project.name = Some(name.to_string());
-                }
-                if let Some(icon) = icon {
-                    project.icon = Some(icon.to_string());
-                }
+            .durable_properties
+            .keys()
+            .chain(inner.state.ephemeral_properties.keys())
+            .filter_map(|(subject, key)| {
+                (key == "kind" && subject.starts_with(PROJECT_PREFIX)).then_some(subject.clone())
             })
-            .or_insert_with(|| ProjectRecord {
-                id: project_id.clone(),
-                path: project_id.clone(),
-                name: name.map(ToOwned::to_owned),
-                icon: icon.map(ToOwned::to_owned),
-                metadata: Default::default(),
-            });
-        Ok(project_id)
-    }
-
-    pub fn bind_workspace(
-        &self,
-        workspace_id: &str,
-        path: &str,
-    ) -> Result<(String, Vec<ServiceEvent>), ServiceError> {
-        let project_id = self.register_project(path, None, None)?;
-        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        let active_before = inner.state.active_project_id();
-        inner.store.bind_workspace(workspace_id, &project_id)?;
-        inner
-            .state
-            .workspace_bindings
-            .insert(workspace_id.to_string(), project_id.clone());
-        let mut events = vec![ServiceEvent::ProjectChanged(project_id.clone())];
-        let active_after = inner.state.active_project_id();
-        if active_before != active_after {
-            events.push(ServiceEvent::ActiveProjectChanged(active_after));
-        }
-        Ok((project_id, events))
-    }
-
-    pub fn unbind_workspace(&self, workspace_id: &str) -> Result<Vec<ServiceEvent>, ServiceError> {
-        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        let active_before = inner.state.active_project_id();
-        let previous = inner.store.unbind_workspace(workspace_id)?;
-        inner.state.workspace_bindings.remove(workspace_id);
-        let mut events = previous
-            .into_iter()
-            .map(ServiceEvent::ProjectChanged)
             .collect::<Vec<_>>();
-        let active_after = inner.state.active_project_id();
-        if active_before != active_after {
-            events.push(ServiceEvent::ActiveProjectChanged(active_after));
-        }
-        Ok(events)
+        projects.sort();
+        projects.dedup();
+        Ok(projects)
     }
 
-    pub fn set_metadata(&self, path: &str, key: &str, value: &str) -> Result<String, ServiceError> {
-        let project_id = self.register_project(path, None, None)?;
-        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        inner.store.set_metadata(&project_id, key, value)?;
-        if let Some(project) = inner.state.projects.get_mut(&project_id) {
-            project.metadata.insert(key.to_string(), value.to_string());
-        }
-        Ok(project_id)
-    }
-
-    pub fn remove_metadata(&self, path: &str, key: &str) -> Result<String, ServiceError> {
-        let project_id = self.register_project(path, None, None)?;
-        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        inner.store.remove_metadata(&project_id, key)?;
-        if let Some(project) = inner.state.projects.get_mut(&project_id) {
-            project.metadata.remove(key);
-        }
-        Ok(project_id)
-    }
-
-    pub fn set_active_workspace(
+    pub fn set_context_link(
         &self,
-        workspace_id: Option<String>,
-    ) -> Result<Vec<ServiceEvent>, ServiceError> {
-        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        let active_before = inner.state.active_project_id();
-        inner.state.active_workspace_id = workspace_id;
-        let active_after = inner.state.active_project_id();
-        if active_before == active_after {
-            Ok(Vec::new())
-        } else {
-            Ok(vec![ServiceEvent::ActiveProjectChanged(active_after)])
-        }
+        context: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> Result<(Vec<Link>, Link), ServiceError> {
+        let subject = context_subject(context);
+        let removed = self.remove_links(&subject, relation)?;
+        let added = self.add_link(&subject, relation, target, durable)?;
+        Ok((removed, added))
     }
 
-    pub fn active_project_id(&self) -> Result<Option<String>, ServiceError> {
-        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        Ok(inner.state.active_project_id())
+    pub fn context_targets(
+        &self,
+        context: &str,
+        relation: &str,
+    ) -> Result<Vec<String>, ServiceError> {
+        self.targets(&context_subject(context), relation)
     }
+}
 
-    pub fn list_project_ids(&self) -> Result<Vec<String>, ServiceError> {
-        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        Ok(inner.state.projects.keys().cloned().collect())
-    }
+pub fn project_subject(canonical_path: &str) -> String {
+    format!("{PROJECT_PREFIX}{canonical_path}")
+}
 
-    pub fn projects(&self) -> Result<Vec<ProjectRecord>, ServiceError> {
-        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        Ok(inner.state.projects.values().cloned().collect())
-    }
+pub fn context_subject(context: &str) -> String {
+    format!("{CONTEXT_PREFIX}{context}")
 }
 
 #[cfg(test)]
@@ -171,28 +254,88 @@ mod tests {
         (tmp, LocusService::new(store).unwrap())
     }
 
-    #[test]
-    fn auto_registers_from_metadata() {
-        let (_tmp, service) = service();
-        service
-            .set_metadata(".", "remarked.notebook", "locus")
-            .unwrap();
-        assert_eq!(service.list_project_ids().unwrap().len(), 1);
+    fn reopen(tmp: &TempDir) -> LocusService {
+        let store = SqliteStore::open(tmp.path().join("locus.db")).unwrap();
+        LocusService::new(store).unwrap()
     }
 
     #[test]
-    fn binding_active_workspace_emits_active_project_change() {
+    fn durable_links_survive_restart() {
+        let (tmp, service) = service();
+        service.add_link("a", "project", "b", true).unwrap();
+        let service = reopen(&tmp);
+
+        assert_eq!(service.targets("a", "project").unwrap(), vec!["b"]);
+    }
+
+    #[test]
+    fn ephemeral_links_do_not_survive_restart() {
+        let (tmp, service) = service();
+        service.add_link("a", "project", "b", false).unwrap();
+        let service = reopen(&tmp);
+
+        assert!(service.targets("a", "project").unwrap().is_empty());
+    }
+
+    #[test]
+    fn returns_reverse_sources_for_multi_target_relations() {
         let (_tmp, service) = service();
         service
-            .set_active_workspace(Some("test:1".to_string()))
+            .add_link("session:1", "project", "project:a", false)
             .unwrap();
-        let (_project_id, events) = service.bind_workspace("test:1", ".").unwrap();
-        assert!(matches!(
-            events.as_slice(),
-            [
-                ServiceEvent::ProjectChanged(_),
-                ServiceEvent::ActiveProjectChanged(Some(_))
-            ]
-        ));
+        service
+            .add_link("session:2", "project", "project:a", false)
+            .unwrap();
+
+        assert_eq!(
+            service.sources("project:a", "project").unwrap(),
+            vec!["session:1", "session:2"]
+        );
+    }
+
+    #[test]
+    fn ephemeral_properties_override_durable_properties() {
+        let (_tmp, service) = service();
+        service
+            .set_property("project:a", "name", "Durable", true)
+            .unwrap();
+        service
+            .set_property("project:a", "name", "Ephemeral", false)
+            .unwrap();
+
+        assert_eq!(
+            service.property("project:a", "name").unwrap().as_deref(),
+            Some("Ephemeral")
+        );
+    }
+
+    #[test]
+    fn ensure_project_sets_project_properties() {
+        let (_tmp, service) = service();
+        let subject = service
+            .ensure_project(".", Some("Locus"), Some("code"), false)
+            .unwrap();
+        let properties = service.properties(&subject).unwrap();
+
+        assert!(subject.starts_with("project:/"));
+        assert_eq!(properties.get("kind").map(String::as_str), Some("project"));
+        assert_eq!(properties.get("name").map(String::as_str), Some("Locus"));
+        assert_eq!(properties.get("icon").map(String::as_str), Some("code"));
+    }
+
+    #[test]
+    fn context_link_replaces_previous_relation() {
+        let (_tmp, service) = service();
+        service
+            .set_context_link("active", "project", "project:a", false)
+            .unwrap();
+        service
+            .set_context_link("active", "project", "project:b", false)
+            .unwrap();
+
+        assert_eq!(
+            service.context_targets("active", "project").unwrap(),
+            vec!["project:b"]
+        );
     }
 }

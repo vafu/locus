@@ -1,149 +1,192 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use thiserror::Error;
 use zbus::proxy;
-use zvariant::{OwnedObjectPath, Type};
 
 pub const BUS_NAME: &str = "io.github.Locus";
 pub const ROOT_PATH: &str = "/io/github/Locus";
-pub const MANAGER_INTERFACE: &str = "io.github.Locus.Manager";
-pub const PROJECT_INTERFACE: &str = "io.github.Locus.Project";
+pub const GRAPH_INTERFACE: &str = "io.github.Locus.Graph";
 pub const NONE_STRING: &str = "";
 
-#[derive(Debug, Error)]
-pub enum ApiError {
-    #[error("invalid object path: {0}")]
-    InvalidObjectPath(#[from] zvariant::Error),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct Project {
-    pub id: String,
-    pub name: String,
-    pub path: String,
-    pub icon: String,
-    pub metadata: HashMap<String, String>,
-}
-
-pub fn project_object_path(project_id: &str) -> Result<OwnedObjectPath, ApiError> {
-    let segment = project_object_segment(project_id);
-    Ok(OwnedObjectPath::try_from(format!(
-        "{ROOT_PATH}/projects/{segment}"
-    ))?)
-}
-
-pub fn project_object_segment(project_id: &str) -> String {
-    let digest = Sha256::digest(project_id.as_bytes());
-    let mut segment = String::from("p_");
-    for byte in &digest[..16] {
-        segment.push_str(&format!("{byte:02x}"));
-    }
-    segment
-}
+pub type LinkTuple = (String, String, String);
 
 #[proxy(
     default_service = "io.github.Locus",
     default_path = "/io/github/Locus",
-    interface = "io.github.Locus.Manager"
+    interface = "io.github.Locus.Graph"
 )]
-pub trait Manager {
-    fn register_project(&self, path: &str, name: &str, icon: &str) -> zbus::Result<String>;
+pub trait Graph {
+    fn add_link(
+        &self,
+        source: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> zbus::Result<()>;
 
-    fn bind_workspace(&self, workspace_id: &str, path: &str) -> zbus::Result<String>;
+    fn remove_link(&self, source: &str, relation: &str, target: &str) -> zbus::Result<()>;
 
-    fn unbind_workspace(&self, workspace_id: &str) -> zbus::Result<()>;
+    fn remove_links(&self, source: &str, relation: &str) -> zbus::Result<()>;
 
-    fn set_metadata(&self, path: &str, key: &str, value: &str) -> zbus::Result<()>;
+    fn get_targets(&self, source: &str, relation: &str) -> zbus::Result<Vec<String>>;
 
-    fn remove_metadata(&self, path: &str, key: &str) -> zbus::Result<()>;
+    fn get_sources(&self, target: &str, relation: &str) -> zbus::Result<Vec<String>>;
 
-    fn get_active_project(&self) -> zbus::Result<String>;
+    fn get_links(&self, subject: &str) -> zbus::Result<Vec<LinkTuple>>;
 
-    fn list_projects(&self) -> zbus::Result<Vec<Project>>;
+    fn set_property(
+        &self,
+        subject: &str,
+        key: &str,
+        value: &str,
+        durable: bool,
+    ) -> zbus::Result<()>;
 
-    #[zbus(property)]
-    fn active_project_id(&self) -> zbus::Result<String>;
+    fn remove_property(&self, subject: &str, key: &str) -> zbus::Result<()>;
+
+    fn get_property(&self, subject: &str, key: &str) -> zbus::Result<String>;
+
+    fn get_properties(&self, subject: &str) -> zbus::Result<HashMap<String, String>>;
+
+    fn ensure_project(
+        &self,
+        path: &str,
+        name: &str,
+        icon: &str,
+        durable: bool,
+    ) -> zbus::Result<String>;
+
+    fn list_projects(&self) -> zbus::Result<Vec<String>>;
+
+    fn set_context_link(
+        &self,
+        context: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> zbus::Result<()>;
+
+    fn get_context_targets(&self, context: &str, relation: &str) -> zbus::Result<Vec<String>>;
 
     #[zbus(signal)]
-    fn active_project_changed(&self, project_id: String) -> zbus::Result<()>;
+    fn link_added(&self, source: String, relation: String, target: String) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    fn project_changed(&self, project_id: String) -> zbus::Result<()>;
+    fn link_removed(&self, source: String, relation: String, target: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn property_changed(&self, subject: String, key: String, value: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn property_removed(&self, subject: String, key: String) -> zbus::Result<()>;
 }
 
 pub struct LocusClient<'a> {
-    proxy: ManagerProxy<'a>,
+    proxy: GraphProxy<'a>,
 }
 
 impl<'a> LocusClient<'a> {
     pub async fn new(connection: &'a zbus::Connection) -> zbus::Result<Self> {
         Ok(Self {
-            proxy: ManagerProxy::new(connection).await?,
+            proxy: GraphProxy::new(connection).await?,
         })
     }
 
-    pub async fn register_project(
+    pub async fn add_link(
+        &self,
+        source: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> zbus::Result<()> {
+        self.proxy.add_link(source, relation, target, durable).await
+    }
+
+    pub async fn remove_link(
+        &self,
+        source: &str,
+        relation: &str,
+        target: &str,
+    ) -> zbus::Result<()> {
+        self.proxy.remove_link(source, relation, target).await
+    }
+
+    pub async fn remove_links(&self, source: &str, relation: &str) -> zbus::Result<()> {
+        self.proxy.remove_links(source, relation).await
+    }
+
+    pub async fn targets(&self, source: &str, relation: &str) -> zbus::Result<Vec<String>> {
+        self.proxy.get_targets(source, relation).await
+    }
+
+    pub async fn sources(&self, target: &str, relation: &str) -> zbus::Result<Vec<String>> {
+        self.proxy.get_sources(target, relation).await
+    }
+
+    pub async fn links(&self, subject: &str) -> zbus::Result<Vec<LinkTuple>> {
+        self.proxy.get_links(subject).await
+    }
+
+    pub async fn set_property(
+        &self,
+        subject: &str,
+        key: &str,
+        value: &str,
+        durable: bool,
+    ) -> zbus::Result<()> {
+        self.proxy.set_property(subject, key, value, durable).await
+    }
+
+    pub async fn remove_property(&self, subject: &str, key: &str) -> zbus::Result<()> {
+        self.proxy.remove_property(subject, key).await
+    }
+
+    pub async fn property(&self, subject: &str, key: &str) -> zbus::Result<Option<String>> {
+        let value = self.proxy.get_property(subject, key).await?;
+        Ok((value != NONE_STRING).then_some(value))
+    }
+
+    pub async fn properties(&self, subject: &str) -> zbus::Result<HashMap<String, String>> {
+        self.proxy.get_properties(subject).await
+    }
+
+    pub async fn ensure_project(
         &self,
         path: &str,
         name: Option<&str>,
         icon: Option<&str>,
+        durable: bool,
     ) -> zbus::Result<String> {
         self.proxy
-            .register_project(
+            .ensure_project(
                 path,
                 name.unwrap_or(NONE_STRING),
                 icon.unwrap_or(NONE_STRING),
+                durable,
             )
             .await
     }
 
-    pub async fn bind_workspace(&self, workspace_id: &str, path: &str) -> zbus::Result<String> {
-        self.proxy.bind_workspace(workspace_id, path).await
-    }
-
-    pub async fn unbind_workspace(&self, workspace_id: &str) -> zbus::Result<()> {
-        self.proxy.unbind_workspace(workspace_id).await
-    }
-
-    pub async fn set_metadata(&self, path: &str, key: &str, value: &str) -> zbus::Result<()> {
-        self.proxy.set_metadata(path, key, value).await
-    }
-
-    pub async fn remove_metadata(&self, path: &str, key: &str) -> zbus::Result<()> {
-        self.proxy.remove_metadata(path, key).await
-    }
-
-    pub async fn active_project(&self) -> zbus::Result<Option<String>> {
-        let value = self.proxy.get_active_project().await?;
-        Ok((value != NONE_STRING).then_some(value))
-    }
-
-    pub async fn list_projects(&self) -> zbus::Result<Vec<Project>> {
+    pub async fn list_projects(&self) -> zbus::Result<Vec<String>> {
         self.proxy.list_projects().await
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hashes_stable_object_segments() {
-        assert_eq!(
-            project_object_segment("/home/v47/proj/locus"),
-            "p_e2cb328d5c2a6f54aee89e64366b43cc"
-        );
+    pub async fn set_context_link(
+        &self,
+        context: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> zbus::Result<()> {
+        self.proxy
+            .set_context_link(context, relation, target, durable)
+            .await
     }
 
-    #[test]
-    fn object_paths_are_valid() {
-        assert_eq!(
-            project_object_path("/home/v47/proj/locus")
-                .unwrap()
-                .as_str(),
-            "/io/github/Locus/projects/p_e2cb328d5c2a6f54aee89e64366b43cc"
-        );
+    pub async fn context_targets(
+        &self,
+        context: &str,
+        relation: &str,
+    ) -> zbus::Result<Vec<String>> {
+        self.proxy.get_context_targets(context, relation).await
     }
 }

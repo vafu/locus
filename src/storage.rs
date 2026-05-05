@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, named_params};
+use rusqlite::{Connection, named_params};
 use thiserror::Error;
 
-use crate::state::ProjectRecord;
+use crate::state::Link;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -40,6 +40,7 @@ impl SqliteStore {
         }
 
         let conn = Connection::open(path)?;
+        conn.execute_batch("pragma foreign_keys = ON;")?;
         let store = Self { conn };
         store.migrate()?;
         Ok(store)
@@ -52,157 +53,114 @@ impl SqliteStore {
                 version integer primary key,
                 applied_at integer not null default (unixepoch())
             );
-            create table if not exists projects (
-                id text primary key,
-                path text not null unique,
-                name text,
-                icon text,
+            create table if not exists links (
+                source text not null,
+                relation text not null,
+                target text not null,
                 created_at integer not null default (unixepoch()),
-                updated_at integer not null default (unixepoch())
+                updated_at integer not null default (unixepoch()),
+                primary key(source, relation, target)
             );
-            create table if not exists project_metadata (
-                project_id text not null references projects(id) on delete cascade,
+            create index if not exists links_source_relation_idx on links(source, relation);
+            create index if not exists links_target_relation_idx on links(target, relation);
+            create table if not exists properties (
+                subject text not null,
                 key text not null,
                 value text not null,
-                primary key(project_id, key)
+                created_at integer not null default (unixepoch()),
+                updated_at integer not null default (unixepoch()),
+                primary key(subject, key)
             );
-            create table if not exists workspace_bindings (
-                workspace_id text primary key,
-                project_id text not null references projects(id) on delete cascade,
-                updated_at integer not null default (unixepoch())
-            );
-            insert or ignore into schema_migrations(version) values (1);
+            create index if not exists properties_subject_idx on properties(subject);
+            insert or ignore into schema_migrations(version) values (2);
             ",
         )?;
         Ok(())
     }
 
-    pub fn load_projects(&self) -> Result<BTreeMap<String, ProjectRecord>, StorageError> {
-        let mut stmt = self
-            .conn
-            .prepare("select id, path, name, icon from projects order by id")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(ProjectRecord {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                name: row.get(2)?,
-                icon: row.get(3)?,
-                metadata: BTreeMap::new(),
-            })
-        })?;
-
-        let mut projects = BTreeMap::new();
-        for row in rows {
-            let project = row?;
-            projects.insert(project.id.clone(), project);
-        }
-
+    pub fn load_links(&self) -> Result<BTreeSet<Link>, StorageError> {
         let mut stmt = self.conn.prepare(
-            "select project_id, key, value from project_metadata order by project_id, key",
+            "select source, relation, target from links order by source, relation, target",
         )?;
         let rows = stmt.query_map([], |row| {
+            Ok(Link {
+                source: row.get(0)?,
+                relation: row.get(1)?,
+                target: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(StorageError::from)
+    }
+
+    pub fn load_properties(&self) -> Result<BTreeMap<(String, String), String>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("select subject, key, value from properties order by subject, key")?;
+        let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
+                (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
                 row.get::<_, String>(2)?,
             ))
         })?;
-        for row in rows {
-            let (project_id, key, value) = row?;
-            if let Some(project) = projects.get_mut(&project_id) {
-                project.metadata.insert(key, value);
-            }
-        }
-
-        Ok(projects)
+        rows.collect::<Result<_, _>>().map_err(StorageError::from)
     }
 
-    pub fn load_workspace_bindings(&self) -> Result<BTreeMap<String, String>, StorageError> {
-        self.load_string_map(
-            "select workspace_id, project_id from workspace_bindings order by workspace_id",
-        )
-    }
-
-    pub fn upsert_project(
-        &mut self,
-        id: &str,
-        name: Option<&str>,
-        icon: Option<&str>,
-    ) -> Result<(), StorageError> {
+    pub fn add_link(&mut self, link: &Link) -> Result<(), StorageError> {
         self.conn.execute(
             "
-            insert into projects(id, path, name, icon) values (:id, :id, :name, :icon)
-            on conflict(id) do update set
-                name = coalesce(excluded.name, projects.name),
-                icon = coalesce(excluded.icon, projects.icon),
-                updated_at = unixepoch()
+            insert into links(source, relation, target) values (:source, :relation, :target)
+            on conflict(source, relation, target) do update set updated_at = unixepoch()
             ",
             named_params! {
-                ":id": id,
-                ":name": name,
-                ":icon": icon,
+                ":source": link.source,
+                ":relation": link.relation,
+                ":target": link.target,
             },
         )?;
         Ok(())
     }
 
-    pub fn bind_workspace(
-        &mut self,
-        workspace_id: &str,
-        project_id: &str,
-    ) -> Result<Option<String>, StorageError> {
-        let previous = self
-            .conn
-            .query_row(
-                "select project_id from workspace_bindings where workspace_id = :workspace_id",
-                named_params! { ":workspace_id": workspace_id },
-                |row| row.get(0),
-            )
-            .optional()?;
+    pub fn remove_link(&mut self, link: &Link) -> Result<(), StorageError> {
         self.conn.execute(
             "
-            insert into workspace_bindings(workspace_id, project_id) values (:workspace_id, :project_id)
-            on conflict(workspace_id) do update set
-                project_id = excluded.project_id,
-                updated_at = unixepoch()
+            delete from links
+            where source = :source and relation = :relation and target = :target
             ",
             named_params! {
-                ":workspace_id": workspace_id,
-                ":project_id": project_id,
+                ":source": link.source,
+                ":relation": link.relation,
+                ":target": link.target,
             },
         )?;
-        Ok(previous)
+        Ok(())
     }
 
-    pub fn unbind_workspace(&mut self, workspace_id: &str) -> Result<Option<String>, StorageError> {
-        let previous = self
-            .conn
-            .query_row(
-                "select project_id from workspace_bindings where workspace_id = :workspace_id",
-                named_params! { ":workspace_id": workspace_id },
-                |row| row.get(0),
-            )
-            .optional()?;
+    pub fn remove_links(&mut self, source: &str, relation: &str) -> Result<(), StorageError> {
         self.conn.execute(
-            "delete from workspace_bindings where workspace_id = :workspace_id",
-            named_params! { ":workspace_id": workspace_id },
+            "delete from links where source = :source and relation = :relation",
+            named_params! {
+                ":source": source,
+                ":relation": relation,
+            },
         )?;
-        Ok(previous)
+        Ok(())
     }
 
-    pub fn set_metadata(
+    pub fn set_property(
         &mut self,
-        project_id: &str,
+        subject: &str,
         key: &str,
         value: &str,
     ) -> Result<(), StorageError> {
         self.conn.execute(
             "
-            insert into project_metadata(project_id, key, value) values (:project_id, :key, :value)
-            on conflict(project_id, key) do update set value = excluded.value
+            insert into properties(subject, key, value) values (:subject, :key, :value)
+            on conflict(subject, key) do update set
+                value = excluded.value,
+                updated_at = unixepoch()
             ",
             named_params! {
-                ":project_id": project_id,
+                ":subject": subject,
                 ":key": key,
                 ":value": value,
             },
@@ -210,20 +168,31 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub fn remove_metadata(&mut self, project_id: &str, key: &str) -> Result<(), StorageError> {
+    pub fn remove_property(&mut self, subject: &str, key: &str) -> Result<(), StorageError> {
         self.conn.execute(
-            "delete from project_metadata where project_id = :project_id and key = :key",
+            "delete from properties where subject = :subject and key = :key",
             named_params! {
-                ":project_id": project_id,
+                ":subject": subject,
                 ":key": key,
             },
         )?;
         Ok(())
     }
+}
 
-    fn load_string_map(&self, sql: &str) -> Result<BTreeMap<String, String>, StorageError> {
-        let mut stmt = self.conn.prepare(sql)?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.collect::<Result<_, _>>().map_err(StorageError::from)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enables_foreign_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(tmp.path().join("locus.db")).unwrap();
+        let enabled: bool = store
+            .conn
+            .query_row("pragma foreign_keys", [], |row| row.get(0))
+            .unwrap();
+
+        assert!(enabled);
     }
 }

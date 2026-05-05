@@ -1,259 +1,250 @@
-use crate::api::{NONE_STRING, Project, ROOT_PATH, project_object_path};
+use crate::api::{NONE_STRING, ROOT_PATH};
+use zbus::Connection;
 use zbus::connection::Builder;
-use zbus::fdo::ObjectManager;
 use zbus::object_server::SignalEmitter;
-use zbus::{Connection, ObjectServer};
 
 use crate::service::{LocusService, ServiceError};
-use crate::state::{ProjectRecord, ServiceEvent};
 
 fn to_fdo(error: ServiceError) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(error.to_string())
 }
 
-fn api_to_fdo(error: crate::api::ApiError) -> zbus::fdo::Error {
-    zbus::fdo::Error::Failed(error.to_string())
-}
-
-fn zbus_to_fdo(error: zbus::Error) -> zbus::fdo::Error {
-    zbus::fdo::Error::Failed(error.to_string())
-}
-
 #[derive(Debug, Clone)]
-pub struct ManagerIface {
+pub struct GraphIface {
     service: LocusService,
 }
 
-impl ManagerIface {
+impl GraphIface {
     pub fn new(service: LocusService) -> Self {
         Self { service }
     }
+}
 
-    async fn emit_events(
-        emitter: &SignalEmitter<'_>,
-        events: Vec<ServiceEvent>,
-    ) -> zbus::Result<()> {
-        for event in events {
-            match event {
-                ServiceEvent::ActiveProjectChanged(project_id) => {
-                    Self::active_project_changed(emitter, option_to_wire(project_id)).await?;
-                }
-                ServiceEvent::ProjectChanged(project_id) => {
-                    Self::project_changed(emitter, project_id).await?;
-                }
-            }
+#[zbus::interface(name = "io.github.Locus.Graph")]
+impl GraphIface {
+    async fn add_link(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        source: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> zbus::fdo::Result<()> {
+        let link = self
+            .service
+            .add_link(source, relation, target, durable)
+            .map_err(to_fdo)?;
+        Self::link_added(&emitter, link.source, link.relation, link.target)
+            .await
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn remove_link(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        source: &str,
+        relation: &str,
+        target: &str,
+    ) -> zbus::fdo::Result<()> {
+        let link = self
+            .service
+            .remove_link(source, relation, target)
+            .map_err(to_fdo)?;
+        Self::link_removed(&emitter, link.source, link.relation, link.target)
+            .await
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn remove_links(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        source: &str,
+        relation: &str,
+    ) -> zbus::fdo::Result<()> {
+        let links = self
+            .service
+            .remove_links(source, relation)
+            .map_err(to_fdo)?;
+        for link in links {
+            Self::link_removed(&emitter, link.source, link.relation, link.target)
+                .await
+                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
         }
         Ok(())
     }
 
-    async fn ensure_project_object(
-        &self,
-        server: &ObjectServer,
-        project_id: &str,
-    ) -> zbus::fdo::Result<()> {
-        server
-            .at(
-                project_object_path(project_id).map_err(api_to_fdo)?,
-                ProjectIface::new(self.service.clone(), project_id.to_string()),
-            )
-            .await?;
-        Ok(())
-    }
-}
-
-#[zbus::interface(name = "io.github.Locus.Manager")]
-impl ManagerIface {
-    async fn register_project(
-        &self,
-        #[zbus(object_server)] server: &ObjectServer,
-        path: &str,
-        name: &str,
-        icon: &str,
-    ) -> zbus::fdo::Result<String> {
-        let project_id = self
-            .service
-            .register_project(path, wire_to_option(name), wire_to_option(icon))
-            .map_err(to_fdo)?;
-        self.ensure_project_object(server, &project_id).await?;
-        Ok(project_id)
+    async fn get_targets(&self, source: &str, relation: &str) -> zbus::fdo::Result<Vec<String>> {
+        self.service.targets(source, relation).map_err(to_fdo)
     }
 
-    async fn bind_workspace(
-        &self,
-        #[zbus(object_server)] server: &ObjectServer,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-        workspace_id: &str,
-        path: &str,
-    ) -> zbus::fdo::Result<String> {
-        let (project_id, events) = self
-            .service
-            .bind_workspace(workspace_id, path)
-            .map_err(to_fdo)?;
-        self.ensure_project_object(server, &project_id).await?;
-        Self::emit_events(&emitter, events)
-            .await
-            .map_err(zbus_to_fdo)?;
-        Ok(project_id)
+    async fn get_sources(&self, target: &str, relation: &str) -> zbus::fdo::Result<Vec<String>> {
+        self.service.sources(target, relation).map_err(to_fdo)
     }
 
-    async fn unbind_workspace(
-        &self,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-        workspace_id: &str,
-    ) -> zbus::fdo::Result<()> {
-        let events = self
-            .service
-            .unbind_workspace(workspace_id)
-            .map_err(to_fdo)?;
-        Self::emit_events(&emitter, events)
-            .await
-            .map_err(zbus_to_fdo)?;
-        Ok(())
-    }
-
-    async fn set_metadata(
-        &self,
-        #[zbus(object_server)] server: &ObjectServer,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-        path: &str,
-        key: &str,
-        value: &str,
-    ) -> zbus::fdo::Result<()> {
-        let project_id = self
-            .service
-            .set_metadata(path, key, value)
-            .map_err(to_fdo)?;
-        self.ensure_project_object(server, &project_id).await?;
-        Self::project_changed(&emitter, project_id)
-            .await
-            .map_err(zbus_to_fdo)?;
-        Ok(())
-    }
-
-    async fn remove_metadata(
-        &self,
-        #[zbus(object_server)] server: &ObjectServer,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-        path: &str,
-        key: &str,
-    ) -> zbus::fdo::Result<()> {
-        let project_id = self.service.remove_metadata(path, key).map_err(to_fdo)?;
-        self.ensure_project_object(server, &project_id).await?;
-        Self::project_changed(&emitter, project_id)
-            .await
-            .map_err(zbus_to_fdo)?;
-        Ok(())
-    }
-
-    async fn get_active_project(&self) -> zbus::fdo::Result<String> {
-        Ok(option_to_wire(
-            self.service.active_project_id().map_err(to_fdo)?,
-        ))
-    }
-
-    async fn list_projects(&self) -> zbus::fdo::Result<Vec<Project>> {
+    async fn get_links(&self, subject: &str) -> zbus::fdo::Result<Vec<(String, String, String)>> {
         Ok(self
             .service
-            .projects()
+            .links(subject)
             .map_err(to_fdo)?
             .into_iter()
-            .map(|project| project.to_dto())
+            .map(|link| link.to_tuple())
             .collect())
     }
 
-    #[zbus(property(emits_changed_signal = "false"))]
-    async fn active_project_id(&self) -> zbus::fdo::Result<String> {
-        Ok(option_to_wire(
-            self.service.active_project_id().map_err(to_fdo)?,
-        ))
+    async fn set_property(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        subject: &str,
+        key: &str,
+        value: &str,
+        durable: bool,
+    ) -> zbus::fdo::Result<()> {
+        self.service
+            .set_property(subject, key, value, durable)
+            .map_err(to_fdo)?;
+        Self::property_changed(
+            &emitter,
+            subject.to_string(),
+            key.to_string(),
+            value.to_string(),
+        )
+        .await
+        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn remove_property(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        subject: &str,
+        key: &str,
+    ) -> zbus::fdo::Result<()> {
+        self.service.remove_property(subject, key).map_err(to_fdo)?;
+        Self::property_removed(&emitter, subject.to_string(), key.to_string())
+            .await
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_property(&self, subject: &str, key: &str) -> zbus::fdo::Result<String> {
+        Ok(self
+            .service
+            .property(subject, key)
+            .map_err(to_fdo)?
+            .unwrap_or_else(|| NONE_STRING.to_string()))
+    }
+
+    async fn get_properties(
+        &self,
+        subject: &str,
+    ) -> zbus::fdo::Result<std::collections::HashMap<String, String>> {
+        Ok(self
+            .service
+            .properties(subject)
+            .map_err(to_fdo)?
+            .into_iter()
+            .collect())
+    }
+
+    async fn ensure_project(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        path: &str,
+        name: &str,
+        icon: &str,
+        durable: bool,
+    ) -> zbus::fdo::Result<String> {
+        let subject = self
+            .service
+            .ensure_project(path, wire_to_option(name), wire_to_option(icon), durable)
+            .map_err(to_fdo)?;
+        for (key, value) in self.service.properties(&subject).map_err(to_fdo)? {
+            Self::property_changed(&emitter, subject.clone(), key, value)
+                .await
+                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        }
+        Ok(subject)
+    }
+
+    async fn list_projects(&self) -> zbus::fdo::Result<Vec<String>> {
+        self.service.projects().map_err(to_fdo)
+    }
+
+    async fn set_context_link(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        context: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> zbus::fdo::Result<()> {
+        let (removed, added) = self
+            .service
+            .set_context_link(context, relation, target, durable)
+            .map_err(to_fdo)?;
+        for link in removed {
+            Self::link_removed(&emitter, link.source, link.relation, link.target)
+                .await
+                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        }
+        Self::link_added(&emitter, added.source, added.relation, added.target)
+            .await
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_context_targets(
+        &self,
+        context: &str,
+        relation: &str,
+    ) -> zbus::fdo::Result<Vec<String>> {
+        self.service
+            .context_targets(context, relation)
+            .map_err(to_fdo)
     }
 
     #[zbus(signal)]
-    async fn active_project_changed(
+    async fn link_added(
         emitter: &SignalEmitter<'_>,
-        project_id: String,
+        source: String,
+        relation: String,
+        target: String,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn project_changed(emitter: &SignalEmitter<'_>, project_id: String) -> zbus::Result<()>;
-}
+    async fn link_removed(
+        emitter: &SignalEmitter<'_>,
+        source: String,
+        relation: String,
+        target: String,
+    ) -> zbus::Result<()>;
 
-#[derive(Debug, Clone)]
-pub struct ProjectIface {
-    service: LocusService,
-    project_id: String,
-}
+    #[zbus(signal)]
+    async fn property_changed(
+        emitter: &SignalEmitter<'_>,
+        subject: String,
+        key: String,
+        value: String,
+    ) -> zbus::Result<()>;
 
-impl ProjectIface {
-    pub fn new(service: LocusService, project_id: String) -> Self {
-        Self {
-            service,
-            project_id,
-        }
-    }
-
-    fn project(&self) -> zbus::fdo::Result<ProjectRecord> {
-        self.service
-            .projects()
-            .map_err(to_fdo)?
-            .into_iter()
-            .find(|project| project.id == self.project_id)
-            .ok_or_else(|| zbus::fdo::Error::UnknownObject(self.project_id.clone()))
-    }
-}
-
-#[zbus::interface(name = "io.github.Locus.Project")]
-impl ProjectIface {
-    #[zbus(property(emits_changed_signal = "const"))]
-    async fn id(&self) -> zbus::fdo::Result<String> {
-        Ok(self.project()?.id)
-    }
-
-    #[zbus(property(emits_changed_signal = "false"))]
-    async fn name(&self) -> zbus::fdo::Result<String> {
-        Ok(self.project()?.display_name())
-    }
-
-    #[zbus(property(emits_changed_signal = "const"))]
-    async fn path(&self) -> zbus::fdo::Result<String> {
-        Ok(self.project()?.path)
-    }
-
-    #[zbus(property(emits_changed_signal = "false"))]
-    async fn icon(&self) -> zbus::fdo::Result<String> {
-        Ok(option_to_wire(self.project()?.icon))
-    }
-
-    #[zbus(property(emits_changed_signal = "false"))]
-    async fn metadata(&self) -> zbus::fdo::Result<std::collections::HashMap<String, String>> {
-        Ok(self.project()?.metadata.into_iter().collect())
-    }
+    #[zbus(signal)]
+    async fn property_removed(
+        emitter: &SignalEmitter<'_>,
+        subject: String,
+        key: String,
+    ) -> zbus::Result<()>;
 }
 
 fn wire_to_option(value: &str) -> Option<&str> {
     (value != NONE_STRING).then_some(value)
 }
 
-fn option_to_wire(value: Option<String>) -> String {
-    value.unwrap_or_default()
-}
-
 pub async fn serve(service: LocusService) -> zbus::Result<Connection> {
-    let mut builder = Builder::session()?
+    Builder::session()?
         .name(crate::api::BUS_NAME)?
-        .serve_at(ROOT_PATH, ObjectManager)?
-        .serve_at(ROOT_PATH, ManagerIface::new(service.clone()))?;
-
-    for project in service
-        .projects()
-        .map_err(|error| zbus::Error::Failure(error.to_string()))?
-    {
-        builder = builder.serve_at(
-            project_object_path(&project.id)
-                .map_err(|error| zbus::Error::Failure(error.to_string()))?,
-            ProjectIface::new(service.clone(), project.id),
-        )?;
-    }
-
-    builder.build().await
+        .serve_at(ROOT_PATH, GraphIface::new(service))?
+        .build()
+        .await
 }

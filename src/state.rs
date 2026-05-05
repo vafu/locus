@@ -1,56 +1,68 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::api::{NONE_STRING, Project};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectRecord {
-    pub id: String,
-    pub name: Option<String>,
-    pub path: String,
-    pub icon: Option<String>,
-    pub metadata: BTreeMap<String, String>,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Link {
+    pub source: String,
+    pub relation: String,
+    pub target: String,
 }
 
-impl ProjectRecord {
-    pub fn display_name(&self) -> String {
-        self.name.clone().unwrap_or_else(|| {
-            self.path
-                .rsplit('/')
-                .find(|part| !part.is_empty())
-                .unwrap_or(&self.path)
-                .to_string()
-        })
-    }
-
-    pub fn to_dto(&self) -> Project {
-        Project {
-            id: self.id.clone(),
-            name: self.display_name(),
-            path: self.path.clone(),
-            icon: self.icon.clone().unwrap_or_else(|| NONE_STRING.to_string()),
-            metadata: self.metadata.clone().into_iter().collect(),
+impl Link {
+    pub fn new(source: &str, relation: &str, target: &str) -> Self {
+        Self {
+            source: source.to_string(),
+            relation: relation.to_string(),
+            target: target.to_string(),
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServiceEvent {
-    ActiveProjectChanged(Option<String>),
-    ProjectChanged(String),
+    pub fn to_tuple(&self) -> (String, String, String) {
+        (
+            self.source.clone(),
+            self.relation.clone(),
+            self.target.clone(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeState {
-    pub projects: BTreeMap<String, ProjectRecord>,
-    pub workspace_bindings: BTreeMap<String, String>,
-    pub active_workspace_id: Option<String>,
+    pub durable_links: BTreeSet<Link>,
+    pub ephemeral_links: BTreeSet<Link>,
+    pub durable_properties: BTreeMap<(String, String), String>,
+    pub ephemeral_properties: BTreeMap<(String, String), String>,
 }
 
 impl RuntimeState {
-    pub fn active_project_id(&self) -> Option<String> {
-        self.active_workspace_id
-            .as_ref()
-            .and_then(|workspace_id| self.workspace_bindings.get(workspace_id))
+    pub fn links(&self) -> BTreeSet<Link> {
+        self.durable_links
+            .union(&self.ephemeral_links)
+            .cloned()
+            .collect()
+    }
+
+    pub fn properties_for(&self, subject: &str) -> BTreeMap<String, String> {
+        let mut properties = BTreeMap::new();
+        for ((property_subject, key), value) in &self.durable_properties {
+            if property_subject == subject {
+                properties.insert(key.clone(), value.clone());
+            }
+        }
+        for ((property_subject, key), value) in &self.ephemeral_properties {
+            if property_subject == subject {
+                properties.insert(key.clone(), value.clone());
+            }
+        }
+        properties
+    }
+
+    pub fn property(&self, subject: &str, key: &str) -> Option<String> {
+        self.ephemeral_properties
+            .get(&(subject.to_string(), key.to_string()))
+            .or_else(|| {
+                self.durable_properties
+                    .get(&(subject.to_string(), key.to_string()))
+            })
             .cloned()
     }
 }
