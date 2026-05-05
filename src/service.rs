@@ -16,6 +16,15 @@ pub enum ServiceError {
     Path(#[from] PathError),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(
+        "reciprocal link rejected: {link_source} --{relation}--> {link_target} conflicts with {link_target} --{existing_relation}--> {link_source}"
+    )]
+    ReciprocalLink {
+        link_source: String,
+        relation: String,
+        link_target: String,
+        existing_relation: String,
+    },
     #[error("service lock is poisoned")]
     Poisoned,
 }
@@ -54,6 +63,22 @@ impl LocusService {
     ) -> Result<Link, ServiceError> {
         let link = Link::new(source, relation, target);
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        if source != target {
+            if let Some(existing) = inner
+                .state
+                .links()
+                .into_iter()
+                .find(|existing| existing.source == target && existing.target == source)
+            {
+                return Err(ServiceError::ReciprocalLink {
+                    link_source: link.source,
+                    relation: link.relation,
+                    link_target: link.target,
+                    existing_relation: existing.relation,
+                });
+            }
+        }
+
         if durable {
             inner.store.add_link(&link)?;
             inner.state.durable_links.insert(link.clone());
@@ -225,9 +250,70 @@ impl LocusService {
         durable: bool,
     ) -> Result<(Vec<Link>, Link), ServiceError> {
         let subject = context_subject(context);
-        let removed = self.remove_links(&subject, relation)?;
-        let added = self.add_link(&subject, relation, target, durable)?;
-        Ok((removed, added))
+        self.set_link(&subject, relation, target, durable)
+    }
+
+    pub fn set_link(
+        &self,
+        source: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> Result<(Vec<Link>, Link), ServiceError> {
+        let link = Link::new(source, relation, target);
+        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+
+        if source != target {
+            if let Some(existing) =
+                inner.state.links().into_iter().find(|existing| {
+                    existing.source == target
+                        && existing.target == source
+                        && !(existing.source == source
+                            && existing.relation == relation
+                            && existing.target == target)
+                })
+            {
+                return Err(ServiceError::ReciprocalLink {
+                    link_source: link.source,
+                    relation: link.relation,
+                    link_target: link.target,
+                    existing_relation: existing.relation,
+                });
+            }
+        }
+
+        let removed = inner
+            .state
+            .links()
+            .into_iter()
+            .filter(|existing| existing.source == source && existing.relation == relation)
+            .collect::<Vec<_>>();
+
+        if durable {
+            inner.store.set_link(&link)?;
+            inner
+                .state
+                .durable_links
+                .retain(|existing| !(existing.source == source && existing.relation == relation));
+            inner
+                .state
+                .ephemeral_links
+                .retain(|existing| !(existing.source == source && existing.relation == relation));
+            inner.state.durable_links.insert(link.clone());
+        } else {
+            inner.store.remove_links(source, relation)?;
+            inner
+                .state
+                .ephemeral_links
+                .retain(|existing| !(existing.source == source && existing.relation == relation));
+            inner
+                .state
+                .durable_links
+                .retain(|existing| !(existing.source == source && existing.relation == relation));
+            inner.state.ephemeral_links.insert(link.clone());
+        }
+
+        Ok((removed, link))
     }
 
     pub fn context_targets(
@@ -299,6 +385,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_reciprocal_links() {
+        let (_tmp, service) = service();
+        service
+            .add_link("niri:workspace:6", "window", "niri:window:57", false)
+            .unwrap();
+
+        let error = service
+            .add_link("niri:window:57", "workspace", "niri:workspace:6", false)
+            .unwrap_err();
+
+        assert!(matches!(error, ServiceError::ReciprocalLink { .. }));
+        assert_eq!(service.all_links().unwrap().len(), 1);
+    }
+
+    #[test]
     fn ephemeral_properties_override_durable_properties() {
         let (_tmp, service) = service();
         service
@@ -341,6 +442,24 @@ mod tests {
         assert_eq!(
             service.context_targets("active", "project").unwrap(),
             vec!["project:b"]
+        );
+    }
+
+    #[test]
+    fn set_link_replaces_previous_relation() {
+        let (_tmp, service) = service();
+        service.set_link("a", "current", "b", false).unwrap();
+        service.set_link("a", "current", "c", false).unwrap();
+
+        assert_eq!(service.targets("a", "current").unwrap(), vec!["c"]);
+        assert_eq!(
+            service
+                .all_links()
+                .unwrap()
+                .into_iter()
+                .map(|link| link.to_tuple())
+                .collect::<Vec<_>>(),
+            vec![("a".to_string(), "current".to_string(), "c".to_string())]
         );
     }
 

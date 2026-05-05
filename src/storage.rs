@@ -146,6 +146,30 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn set_link(&mut self, link: &Link) -> Result<(), StorageError> {
+        let transaction = self.conn.transaction()?;
+        transaction.execute(
+            "delete from links where source = :source and relation = :relation",
+            named_params! {
+                ":source": link.source,
+                ":relation": link.relation,
+            },
+        )?;
+        transaction.execute(
+            "
+            insert into links(source, relation, target) values (:source, :relation, :target)
+            on conflict(source, relation, target) do update set updated_at = unixepoch()
+            ",
+            named_params! {
+                ":source": link.source,
+                ":relation": link.relation,
+                ":target": link.target,
+            },
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn set_property(
         &mut self,
         subject: &str,

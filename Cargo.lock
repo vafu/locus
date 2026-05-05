@@ -553,6 +553,7 @@ dependencies = [
  "camino",
  "clap",
  "dirs",
+ "niri-ipc",
  "rusqlite",
  "sha2",
  "tempfile",
@@ -591,6 +592,16 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "niri-ipc"
+version = "25.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12bd9eb4e437f5282ce853cf66837658379cb537b4b6bae687da59246005329a"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -43,6 +43,24 @@ impl GraphIface {
         Ok(())
     }
 
+    async fn set_link(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        source: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> zbus::fdo::Result<()> {
+        eprintln!(
+            "locusd: SetLink source={source:?} relation={relation:?} target={target:?} durable={durable}"
+        );
+        let (removed, added) = self
+            .service
+            .set_link(source, relation, target, durable)
+            .map_err(to_fdo)?;
+        emit_link_replacement(&emitter, removed, added, true).await
+    }
+
     async fn remove_link(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
@@ -209,15 +227,7 @@ impl GraphIface {
             .service
             .set_context_link(context, relation, target, durable)
             .map_err(to_fdo)?;
-        for link in removed {
-            Self::link_removed(&emitter, link.source, link.relation, link.target)
-                .await
-                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-        }
-        Self::link_added(&emitter, added.source, added.relation, added.target)
-            .await
-            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-        Ok(())
+        emit_link_replacement(&emitter, removed, added, true).await
     }
 
     async fn get_context_targets(
@@ -247,6 +257,15 @@ impl GraphIface {
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
+    async fn link_set(
+        emitter: &SignalEmitter<'_>,
+        source: String,
+        relation: String,
+        old_targets: Vec<String>,
+        target: String,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
     async fn property_changed(
         emitter: &SignalEmitter<'_>,
         subject: String,
@@ -260,6 +279,39 @@ impl GraphIface {
         subject: String,
         key: String,
     ) -> zbus::Result<()>;
+}
+
+async fn emit_link_replacement(
+    emitter: &SignalEmitter<'_>,
+    removed: Vec<crate::state::Link>,
+    added: crate::state::Link,
+    emit_set: bool,
+) -> zbus::fdo::Result<()> {
+    if emit_set {
+        let old_targets = removed
+            .iter()
+            .map(|link| link.target.clone())
+            .collect::<Vec<_>>();
+        GraphIface::link_set(
+            emitter,
+            added.source.clone(),
+            added.relation.clone(),
+            old_targets,
+            added.target.clone(),
+        )
+        .await
+        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+    }
+
+    for link in removed {
+        GraphIface::link_removed(emitter, link.source, link.relation, link.target)
+            .await
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+    }
+    GraphIface::link_added(emitter, added.source, added.relation, added.target)
+        .await
+        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+    Ok(())
 }
 
 fn wire_to_option(value: &str) -> Option<&str> {

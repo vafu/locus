@@ -199,6 +199,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .event { border-left: 3px solid var(--line); margin: 8px 0; padding: 6px 8px; background: #131720; }
     .event.add { border-color: var(--green); }
     .event.remove { border-color: var(--red); }
+    .event.set { border-color: var(--accent); }
     .event .kind { font-weight: 700; }
     .event .link { color: var(--dim); overflow-wrap: anywhere; }
     .link-line { stroke: var(--line); stroke-width: 1.4; marker-end: url(#arrow); }
@@ -318,18 +319,47 @@ async function refresh() {
 
 function diffLog(links) {
   const current = new Set(links.map(key));
-  for (const l of links) if (!previousLinks.has(key(l))) event('add', l);
-  for (const old of previousLinks) if (!current.has(old)) {
+  const added = links.filter(l => !previousLinks.has(key(l)));
+  const removed = [...previousLinks].filter(old => !current.has(old)).map(old => {
     const [source, relation, target] = old.split('\t');
-    event('remove', { source, relation, target });
+    return { source, relation, target };
+  });
+  const addedBySlot = new Map();
+  for (const l of added) {
+    const slot = `${l.source}\t${l.relation}`;
+    if (!addedBySlot.has(slot)) addedBySlot.set(slot, []);
+    addedBySlot.get(slot).push(l);
+  }
+  const removedBySlot = new Map();
+  for (const l of removed) {
+    const slot = `${l.source}\t${l.relation}`;
+    if (!removedBySlot.has(slot)) removedBySlot.set(slot, []);
+    removedBySlot.get(slot).push(l);
+  }
+  const usedAdds = new Set();
+  const usedRemoves = new Set();
+  for (const [slot, oldLinks] of removedBySlot) {
+    const newLinks = addedBySlot.get(slot) || [];
+    if (newLinks.length !== 1) continue;
+    const next = newLinks[0];
+    event('set', next, { oldTargets: oldLinks.map(l => l.target) });
+    usedAdds.add(key(next));
+    for (const old of oldLinks) usedRemoves.add(key(old));
+  }
+  for (const l of added) if (!usedAdds.has(key(l))) event('add', l);
+  for (const l of removed) {
+    if (!usedRemoves.has(key(l))) event('remove', l);
   }
   previousLinks = current;
 }
 
-function event(type, l) {
+function event(type, l, meta = {}) {
   const row = document.createElement('div');
   row.className = `event ${type}`;
-  row.innerHTML = `<div><span class="kind">${type}</span> ${new Date().toLocaleTimeString()}</div><div class="link">${esc(l.source)} --${esc(l.relation)}--> ${esc(l.target)}</div>`;
+  const detail = type === 'set' && meta.oldTargets?.length
+    ? `<div class="link">was ${esc(meta.oldTargets.join(', '))}</div>`
+    : '';
+  row.innerHTML = `<div><span class="kind">${type}</span> ${new Date().toLocaleTimeString()}</div><div class="link">${esc(l.source)} --${esc(l.relation)}--> ${esc(l.target)}</div>${detail}`;
   log.prepend(row);
   while (log.children.length > 80) log.lastChild.remove();
 }

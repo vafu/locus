@@ -23,6 +23,14 @@ pub trait Graph {
         durable: bool,
     ) -> zbus::Result<()>;
 
+    fn set_link(
+        &self,
+        source: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> zbus::Result<()>;
+
     fn remove_link(&self, source: &str, relation: &str, target: &str) -> zbus::Result<()>;
 
     fn remove_links(&self, source: &str, relation: &str) -> zbus::Result<()>;
@@ -74,6 +82,15 @@ pub trait Graph {
 
     #[zbus(signal)]
     fn link_removed(&self, source: String, relation: String, target: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn link_set(
+        &self,
+        source: String,
+        relation: String,
+        old_targets: Vec<String>,
+        target: String,
+    ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     fn property_changed(&self, subject: String, key: String, value: String) -> zbus::Result<()>;
@@ -137,6 +154,16 @@ impl<'a> LocusClient<'a> {
         durable: bool,
     ) -> zbus::Result<()> {
         self.proxy.add_link(source, relation, target, durable).await
+    }
+
+    pub async fn set_link(
+        &self,
+        source: &str,
+        relation: &str,
+        target: &str,
+        durable: bool,
+    ) -> zbus::Result<()> {
+        self.proxy.set_link(source, relation, target, durable).await
     }
 
     pub async fn remove_link(

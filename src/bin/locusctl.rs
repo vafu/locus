@@ -50,6 +50,7 @@ struct ProjectEnsure {
 #[derive(Debug, Subcommand)]
 enum LinkCommand {
     Add(LinkAdd),
+    Set(LinkAdd),
     Remove(LinkRemove),
     Clear(LinkClear),
     Targets(LinkQuery),
@@ -169,6 +170,11 @@ async fn main() -> anyhow::Result<()> {
             LinkCommand::Add(args) => {
                 client
                     .add_link(&args.source, &args.relation, &args.target, args.durable)
+                    .await?;
+            }
+            LinkCommand::Set(args) => {
+                client
+                    .set_link(&args.source, &args.relation, &args.target, args.durable)
                     .await?;
             }
             LinkCommand::Remove(args) => {
