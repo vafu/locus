@@ -30,6 +30,9 @@ impl GraphIface {
         target: &str,
         durable: bool,
     ) -> zbus::fdo::Result<()> {
+        eprintln!(
+            "locusd: AddLink source={source:?} relation={relation:?} target={target:?} durable={durable}"
+        );
         let link = self
             .service
             .add_link(source, relation, target, durable)
@@ -47,6 +50,7 @@ impl GraphIface {
         relation: &str,
         target: &str,
     ) -> zbus::fdo::Result<()> {
+        eprintln!("locusd: RemoveLink source={source:?} relation={relation:?} target={target:?}");
         let link = self
             .service
             .remove_link(source, relation, target)
@@ -63,6 +67,7 @@ impl GraphIface {
         source: &str,
         relation: &str,
     ) -> zbus::fdo::Result<()> {
+        eprintln!("locusd: RemoveLinks source={source:?} relation={relation:?}");
         let links = self
             .service
             .remove_links(source, relation)
@@ -101,6 +106,9 @@ impl GraphIface {
         value: &str,
         durable: bool,
     ) -> zbus::fdo::Result<()> {
+        eprintln!(
+            "locusd: SetProperty subject={subject:?} key={key:?} value={value:?} durable={durable}"
+        );
         self.service
             .set_property(subject, key, value, durable)
             .map_err(to_fdo)?;
@@ -121,6 +129,7 @@ impl GraphIface {
         subject: &str,
         key: &str,
     ) -> zbus::fdo::Result<()> {
+        eprintln!("locusd: RemoveProperty subject={subject:?} key={key:?}");
         self.service.remove_property(subject, key).map_err(to_fdo)?;
         Self::property_removed(&emitter, subject.to_string(), key.to_string())
             .await
@@ -156,6 +165,9 @@ impl GraphIface {
         icon: &str,
         durable: bool,
     ) -> zbus::fdo::Result<String> {
+        eprintln!(
+            "locusd: EnsureProject path={path:?} name={name:?} icon={icon:?} durable={durable}"
+        );
         let subject = self
             .service
             .ensure_project(path, wire_to_option(name), wire_to_option(icon), durable)
@@ -180,6 +192,9 @@ impl GraphIface {
         target: &str,
         durable: bool,
     ) -> zbus::fdo::Result<()> {
+        eprintln!(
+            "locusd: SetContextLink context={context:?} relation={relation:?} target={target:?} durable={durable}"
+        );
         let (removed, added) = self
             .service
             .set_context_link(context, relation, target, durable)
