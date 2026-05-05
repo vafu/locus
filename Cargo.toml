@@ -5,7 +5,15 @@ edition = "2024"
 
 [features]
 default = ["cli", "server"]
-cli = ["server", "dep:anyhow", "dep:clap", "dep:futures-util", "dep:niri-ipc", "dep:tokio"]
+cli = [
+    "server",
+    "dep:anyhow",
+    "dep:cel",
+    "dep:clap",
+    "dep:futures-util",
+    "dep:niri-ipc",
+    "dep:tokio",
+]
 server = [
     "dep:camino",
     "dep:dirs",
@@ -18,6 +26,7 @@ server = [
 [dependencies]
 anyhow = { version = "1.0.100", optional = true }
 camino = { version = "1.2.2", optional = true }
+cel = { version = "0.13.0", optional = true }
 clap = { version = "4.5.56", features = ["derive"], optional = true }
 dirs = { version = "6.0.0", optional = true }
 futures-util = { version = "0.3.32", optional = true }
