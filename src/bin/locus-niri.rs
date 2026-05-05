@@ -11,7 +11,6 @@ const WORKSPACE_RELATION: &str = "workspace";
 const WINDOW_RELATION: &str = "window";
 const PROJECT_RELATION: &str = "project";
 const SELECTED_CONTEXT: &str = "selected";
-const ACTIVE_CONTEXT: &str = "active";
 
 #[derive(Debug, Parser)]
 #[command(name = "locus-niri")]
@@ -56,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
                 let _ = state.apply(event);
                 let next = state_to_niri_state(&state);
                 publish_state(&client, &previous, &next).await;
-                sync_active_project(&client, next.focused_workspace.as_deref()).await;
+                sync_selected_project(&client, next.focused_workspace.as_deref()).await;
                 previous = next;
             }
             result = tokio::signal::ctrl_c() => {
@@ -161,6 +160,12 @@ async fn clear_existing_niri_edges(client: &Client<'_>) {
     let _ = client
         .remove_links(&context_subject(SELECTED_CONTEXT), WINDOW_RELATION)
         .await;
+    let _ = client
+        .remove_links(&context_subject(SELECTED_CONTEXT), PROJECT_RELATION)
+        .await;
+    let _ = client
+        .remove_links(&context_subject("active"), PROJECT_RELATION)
+        .await;
 }
 
 fn state_to_niri_state(state: &EventStreamState) -> NiriState {
@@ -229,10 +234,10 @@ async fn set_or_clear_context(
     }
 }
 
-async fn sync_active_project(client: &Client<'_>, focused_workspace: Option<&str>) {
+async fn sync_selected_project(client: &Client<'_>, focused_workspace: Option<&str>) {
     let Some(workspace) = focused_workspace else {
         let _ = client
-            .remove_links(&context_subject(ACTIVE_CONTEXT), PROJECT_RELATION)
+            .remove_links(&context_subject(SELECTED_CONTEXT), PROJECT_RELATION)
             .await;
         return;
     };
@@ -244,5 +249,5 @@ async fn sync_active_project(client: &Client<'_>, focused_workspace: Option<&str
         .into_iter()
         .find(|target| target.starts_with("project:"));
 
-    set_or_clear_context(client, ACTIVE_CONTEXT, PROJECT_RELATION, &project).await;
+    set_or_clear_context(client, SELECTED_CONTEXT, PROJECT_RELATION, &project).await;
 }
