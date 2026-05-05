@@ -1,19 +1,15 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
-use crate::paths::{PathError, canonical_project_path};
 use crate::state::{Link, RuntimeState};
 use crate::storage::{SqliteStore, StorageError};
 
-pub const PROJECT_PREFIX: &str = "project:";
 pub const CONTEXT_PREFIX: &str = "context:";
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
-    #[error(transparent)]
-    Path(#[from] PathError),
     #[error(transparent)]
     Storage(#[from] StorageError),
     #[error(
@@ -206,51 +202,42 @@ impl LocusService {
         Ok(inner.state.properties_for(subject))
     }
 
-    pub fn ensure_project(
-        &self,
-        path: &str,
-        name: Option<&str>,
-        icon: Option<&str>,
-        durable: bool,
-    ) -> Result<String, ServiceError> {
-        let canonical = canonical_project_path(path)?;
-        let subject = project_subject(&canonical);
-        self.set_property(&subject, "kind", "project", durable)?;
-        self.set_property(&subject, "path", &canonical, durable)?;
-        if let Some(name) = name {
-            self.set_property(&subject, "name", name, durable)?;
-        }
-        if let Some(icon) = icon {
-            self.set_property(&subject, "icon", icon, durable)?;
-        }
-        Ok(subject)
-    }
-
-    pub fn projects(&self) -> Result<Vec<String>, ServiceError> {
+    pub fn subjects(&self) -> Result<Vec<String>, ServiceError> {
         let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        let mut projects = inner
+        let mut subjects = BTreeSet::new();
+        for link in inner.state.links() {
+            subjects.insert(link.source);
+            subjects.insert(link.target);
+        }
+        for (subject, _) in inner
             .state
             .durable_properties
             .keys()
             .chain(inner.state.ephemeral_properties.keys())
-            .filter_map(|(subject, key)| {
-                (key == "kind" && subject.starts_with(PROJECT_PREFIX)).then_some(subject.clone())
-            })
-            .collect::<Vec<_>>();
-        projects.sort();
-        projects.dedup();
-        Ok(projects)
+        {
+            subjects.insert(subject.clone());
+        }
+        Ok(subjects.into_iter().collect())
     }
 
-    pub fn set_context_link(
+    pub fn subjects_with_property(
         &self,
-        context: &str,
-        relation: &str,
-        target: &str,
-        durable: bool,
-    ) -> Result<(Vec<Link>, Link), ServiceError> {
-        let subject = context_subject(context);
-        self.set_link(&subject, relation, target, durable)
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<Vec<String>, ServiceError> {
+        let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        let mut subjects = BTreeSet::new();
+        for ((subject, property_key), property_value) in inner
+            .state
+            .durable_properties
+            .iter()
+            .chain(inner.state.ephemeral_properties.iter())
+        {
+            if property_key == key && value.is_none_or(|value| property_value == value) {
+                subjects.insert(subject.clone());
+            }
+        }
+        Ok(subjects.into_iter().collect())
     }
 
     pub fn set_link(
@@ -264,15 +251,13 @@ impl LocusService {
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
 
         if source != target {
-            if let Some(existing) =
-                inner.state.links().into_iter().find(|existing| {
-                    existing.source == target
-                        && existing.target == source
-                        && !(existing.source == source
-                            && existing.relation == relation
-                            && existing.target == target)
-                })
-            {
+            if let Some(existing) = inner.state.links().into_iter().find(|existing| {
+                existing.source == target
+                    && existing.target == source
+                    && !(existing.source == source
+                        && existing.relation == relation
+                        && existing.target == target)
+            }) {
                 return Err(ServiceError::ReciprocalLink {
                     link_source: link.source,
                     relation: link.relation,
@@ -315,18 +300,6 @@ impl LocusService {
 
         Ok((removed, link))
     }
-
-    pub fn context_targets(
-        &self,
-        context: &str,
-        relation: &str,
-    ) -> Result<Vec<String>, ServiceError> {
-        self.targets(&context_subject(context), relation)
-    }
-}
-
-pub fn project_subject(canonical_path: &str) -> String {
-    format!("{PROJECT_PREFIX}{canonical_path}")
 }
 
 pub fn context_subject(context: &str) -> String {
@@ -416,32 +389,32 @@ mod tests {
     }
 
     #[test]
-    fn ensure_project_sets_project_properties() {
+    fn subjects_include_links_and_properties() {
         let (_tmp, service) = service();
-        let subject = service
-            .ensure_project(".", Some("Locus"), Some("code"), false)
-            .unwrap();
-        let properties = service.properties(&subject).unwrap();
+        service.add_link("a", "rel", "b", false).unwrap();
+        service.set_property("c", "kind", "thing", false).unwrap();
 
-        assert!(subject.starts_with("project:/"));
-        assert_eq!(properties.get("kind").map(String::as_str), Some("project"));
-        assert_eq!(properties.get("name").map(String::as_str), Some("Locus"));
-        assert_eq!(properties.get("icon").map(String::as_str), Some("code"));
+        assert_eq!(service.subjects().unwrap(), vec!["a", "b", "c"]);
     }
 
     #[test]
-    fn context_link_replaces_previous_relation() {
+    fn finds_subjects_by_property() {
         let (_tmp, service) = service();
+        service.set_property("a", "kind", "project", false).unwrap();
         service
-            .set_context_link("active", "project", "project:a", false)
+            .set_property("b", "kind", "workspace", false)
             .unwrap();
-        service
-            .set_context_link("active", "project", "project:b", false)
-            .unwrap();
+        service.set_property("c", "kind", "project", false).unwrap();
 
         assert_eq!(
-            service.context_targets("active", "project").unwrap(),
-            vec!["project:b"]
+            service
+                .subjects_with_property("kind", Some("project"))
+                .unwrap(),
+            vec!["a", "c"]
+        );
+        assert_eq!(
+            service.subjects_with_property("kind", None).unwrap(),
+            vec!["a", "b", "c"]
         );
     }
 

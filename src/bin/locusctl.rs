@@ -19,10 +19,6 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    Project {
-        #[command(subcommand)]
-        command: ProjectCommand,
-    },
     Link {
         #[command(subcommand)]
         command: LinkCommand,
@@ -36,23 +32,6 @@ enum Command {
         command: ContextCommand,
     },
     Watch(WatchArgs),
-}
-
-#[derive(Debug, Subcommand)]
-enum ProjectCommand {
-    Ensure(ProjectEnsure),
-    List,
-}
-
-#[derive(Debug, ClapArgs)]
-struct ProjectEnsure {
-    path: String,
-    #[arg(long)]
-    name: Option<String>,
-    #[arg(long)]
-    icon: Option<String>,
-    #[arg(long)]
-    durable: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -102,6 +81,7 @@ enum PropCommand {
     Set(PropSet),
     Get(PropGet),
     List { subject: String },
+    Subjects(PropSubjects),
     Remove(PropRemove),
 }
 
@@ -124,6 +104,14 @@ struct PropGet {
 struct PropRemove {
     subject: String,
     key: String,
+}
+
+#[derive(Debug, ClapArgs)]
+struct PropSubjects {
+    #[arg(long)]
+    key: Option<String>,
+    #[arg(long)]
+    value: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -255,20 +243,6 @@ async fn main() -> anyhow::Result<()> {
         .context("connect to locusd")?;
 
     match args.command {
-        Command::Project { command } => match command {
-            ProjectCommand::Ensure(args) => {
-                let subject = client
-                    .ensure_project(
-                        &args.path,
-                        args.name.as_deref(),
-                        args.icon.as_deref(),
-                        args.durable,
-                    )
-                    .await?;
-                println!("{subject}");
-            }
-            ProjectCommand::List => print_lines(client.list_projects().await?),
-        },
         Command::Link { command } => match command {
             LinkCommand::Add(args) => {
                 client
@@ -332,6 +306,16 @@ async fn main() -> anyhow::Result<()> {
                 for (key, value) in properties {
                     println!("{key}\t{value}");
                 }
+            }
+            PropCommand::Subjects(args) => {
+                let subjects = if let Some(key) = args.key {
+                    client.find_subjects(&key, args.value.as_deref()).await?
+                } else if args.value.is_some() {
+                    bail!("--value requires --key");
+                } else {
+                    client.subjects().await?
+                };
+                print_lines(subjects);
             }
             PropCommand::Remove(args) => {
                 client.remove_property(&args.subject, &args.key).await?;

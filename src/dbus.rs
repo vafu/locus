@@ -20,7 +20,15 @@ impl GraphIface {
     }
 }
 
-#[zbus::interface(name = "io.github.Locus.Graph")]
+#[zbus::interface(
+    name = "io.github.Locus.Graph",
+    proxy(
+        default_service = "io.github.Locus",
+        default_path = "/io/github/Locus",
+        gen_blocking = false,
+        visibility = "pub"
+    )
+)]
 impl GraphIface {
     async fn add_link(
         &self,
@@ -185,58 +193,13 @@ impl GraphIface {
             .collect())
     }
 
-    async fn ensure_project(
-        &self,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-        path: &str,
-        name: &str,
-        icon: &str,
-        durable: bool,
-    ) -> zbus::fdo::Result<String> {
-        eprintln!(
-            "locusd: EnsureProject path={path:?} name={name:?} icon={icon:?} durable={durable}"
-        );
-        let subject = self
-            .service
-            .ensure_project(path, wire_to_option(name), wire_to_option(icon), durable)
-            .map_err(to_fdo)?;
-        for (key, value) in self.service.properties(&subject).map_err(to_fdo)? {
-            Self::property_changed(&emitter, subject.clone(), key, value)
-                .await
-                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-        }
-        Ok(subject)
+    async fn get_subjects(&self) -> zbus::fdo::Result<Vec<String>> {
+        self.service.subjects().map_err(to_fdo)
     }
 
-    async fn list_projects(&self) -> zbus::fdo::Result<Vec<String>> {
-        self.service.projects().map_err(to_fdo)
-    }
-
-    async fn set_context_link(
-        &self,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-        context: &str,
-        relation: &str,
-        target: &str,
-        durable: bool,
-    ) -> zbus::fdo::Result<()> {
-        eprintln!(
-            "locusd: SetContextLink context={context:?} relation={relation:?} target={target:?} durable={durable}"
-        );
-        let (removed, added) = self
-            .service
-            .set_context_link(context, relation, target, durable)
-            .map_err(to_fdo)?;
-        emit_link_replacement(&emitter, removed, added, true).await
-    }
-
-    async fn get_context_targets(
-        &self,
-        context: &str,
-        relation: &str,
-    ) -> zbus::fdo::Result<Vec<String>> {
+    async fn find_subjects(&self, key: &str, value: &str) -> zbus::fdo::Result<Vec<String>> {
         self.service
-            .context_targets(context, relation)
+            .subjects_with_property(key, wire_to_option(value))
             .map_err(to_fdo)
     }
 

@@ -9,7 +9,6 @@ use tokio::sync::mpsc;
 
 const WORKSPACE_RELATION: &str = "workspace";
 const WINDOW_RELATION: &str = "window";
-const PROJECT_RELATION: &str = "project";
 const SELECTED_CONTEXT: &str = "selected";
 
 #[derive(Debug, Parser)]
@@ -55,7 +54,6 @@ async fn main() -> anyhow::Result<()> {
                 let _ = state.apply(event);
                 let next = state_to_niri_state(&state);
                 publish_state(&client, &previous, &next).await;
-                sync_selected_project(&client, next.focused_workspace.as_deref()).await;
                 previous = next;
             }
             result = tokio::signal::ctrl_c() => {
@@ -118,17 +116,28 @@ async fn publish_state(client: &Client<'_>, previous: &NiriState, next: &NiriSta
         add_workspace_window(client, workspace, window).await;
     }
     if previous.focused_workspace != next.focused_workspace {
-        set_or_clear_context(client, SELECTED_CONTEXT, WORKSPACE_RELATION, &next.focused_workspace)
-            .await;
+        set_or_clear_context(
+            client,
+            SELECTED_CONTEXT,
+            WORKSPACE_RELATION,
+            &next.focused_workspace,
+        )
+        .await;
     }
     if previous.focused_window != next.focused_window {
-        set_or_clear_context(client, SELECTED_CONTEXT, WINDOW_RELATION, &next.focused_window).await;
+        set_or_clear_context(
+            client,
+            SELECTED_CONTEXT,
+            WINDOW_RELATION,
+            &next.focused_window,
+        )
+        .await;
     }
 }
 
 async fn add_workspace_window(client: &Client<'_>, workspace: &str, window: &str) {
     let _ = client
-        .add_link(workspace, WINDOW_RELATION, window, false)
+        .set_link(window, WORKSPACE_RELATION, workspace, false)
         .await;
 }
 
@@ -159,12 +168,6 @@ async fn clear_existing_niri_edges(client: &Client<'_>) {
         .await;
     let _ = client
         .remove_links(&context_subject(SELECTED_CONTEXT), WINDOW_RELATION)
-        .await;
-    let _ = client
-        .remove_links(&context_subject(SELECTED_CONTEXT), PROJECT_RELATION)
-        .await;
-    let _ = client
-        .remove_links(&context_subject("active"), PROJECT_RELATION)
         .await;
 }
 
@@ -232,22 +235,4 @@ async fn set_or_clear_context(
     } else {
         let _ = client.remove_links(&source, relation).await;
     }
-}
-
-async fn sync_selected_project(client: &Client<'_>, focused_workspace: Option<&str>) {
-    let Some(workspace) = focused_workspace else {
-        let _ = client
-            .remove_links(&context_subject(SELECTED_CONTEXT), PROJECT_RELATION)
-            .await;
-        return;
-    };
-
-    let project = client
-        .targets(workspace, PROJECT_RELATION)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .find(|target| target.starts_with("project:"));
-
-    set_or_clear_context(client, SELECTED_CONTEXT, PROJECT_RELATION, &project).await;
 }
