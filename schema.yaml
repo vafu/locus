@@ -8,6 +8,11 @@ nodes:
     properties:
       source: {}
       external-id: {}
+      idx: {}
+      name: {}
+      active: {}
+      focused: {}
+      urgent: {}
   project:
     properties:
       path:
@@ -18,6 +23,10 @@ nodes:
     properties:
       cwd: {}
       model: {}
+  output:
+    properties:
+      source: {}
+      connector: {}
 
 relations:
   window:
@@ -29,6 +38,17 @@ relations:
   workspace:
     from: window
     to: workspace
+    cardinality: many-to-one
+
+  selected-workspace:
+    from:
+      exact: context:selected
+    to: workspace
+    cardinality: many-to-one
+
+  output:
+    from: workspace
+    to: output
     cardinality: many-to-one
 
   project:
@@ -48,11 +68,15 @@ paths:
 
   selected-workspace:
     from: context:selected
-    path: [window, workspace]
+    path: [selected-workspace]
+
+  selected-output:
+    from: context:selected
+    path: [selected-workspace, output]
 
   selected-project:
     from: context:selected
-    path: [window, workspace, project]
+    path: [selected-workspace, project]
 
   selected-agent-session:
     from: context:selected

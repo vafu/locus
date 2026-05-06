@@ -1,13 +1,18 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 use zbus::Connection;
 use zbus::connection::Builder;
-use zbus::object_server::SignalEmitter;
+use zbus::names::InterfaceName;
+use zbus::object_server::{ObjectServer, SignalEmitter};
+use zbus::zvariant::{OwnedObjectPath, Value};
 
 use locus_api::{Graph, GraphError, Link, LinkSetChange, PropertyChange, Resolution};
 
 pub const BUS_NAME: &str = "io.github.Locus";
 pub const ROOT_PATH: &str = "/io/github/Locus";
 pub const GRAPH_INTERFACE: &str = "io.github.Locus.Graph";
+pub const WATCH_INTERFACE: &str = "io.github.Locus.Watch";
+pub const WATCH_ROOT_PATH: &str = "/io/github/Locus/Watch";
 pub const NONE_STRING: &str = "";
 
 pub type LinkTuple = (String, String, String);
@@ -15,6 +20,7 @@ pub type LinkTuple = (String, String, String);
 #[derive(Debug, Clone)]
 pub struct GraphIface<B> {
     backend: B,
+    watches: Arc<Mutex<WatchManager>>,
 }
 
 impl<B> GraphIface<B>
@@ -22,7 +28,164 @@ where
     B: Graph,
 {
     pub fn new(backend: B) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            watches: Arc::new(Mutex::new(WatchManager::default())),
+        }
+    }
+
+    async fn refresh_watches(&self, conn: &Connection) -> zbus::fdo::Result<()> {
+        let handles = self
+            .watches
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("watch manager poisoned".to_string()))?
+            .handles();
+        let mut changed = Vec::new();
+
+        for handle in handles {
+            let source = handle.source()?;
+            let path = handle.path()?;
+            let target = self
+                .backend
+                .resolve_path(&source, &path)
+                .map_err(to_fdo)?
+                .unwrap_or_else(|| NONE_STRING.to_string());
+            if handle.set_target(target.clone())? {
+                changed.push((handle.object_path, target));
+            }
+        }
+
+        for (object_path, target) in changed {
+            emit_watch_target_changed(conn, &object_path, &target).await?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct WatchManager {
+    next_id: u64,
+    watches: BTreeMap<String, WatchHandle>,
+}
+
+impl WatchManager {
+    fn insert(&mut self, source: String, path: Vec<String>, target: String) -> WatchHandle {
+        self.next_id += 1;
+        let object_path = format!("{WATCH_ROOT_PATH}/{}", self.next_id);
+        let state = Arc::new(Mutex::new(WatchState {
+            source,
+            path,
+            target,
+        }));
+        let handle = WatchHandle {
+            object_path: object_path.clone(),
+            state,
+        };
+        self.watches.insert(object_path, handle.clone());
+        handle
+    }
+
+    fn remove(&mut self, object_path: &str) {
+        self.watches.remove(object_path);
+    }
+
+    fn handles(&self) -> Vec<WatchHandle> {
+        self.watches.values().cloned().collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WatchHandle {
+    object_path: String,
+    state: Arc<Mutex<WatchState>>,
+}
+
+impl WatchHandle {
+    fn source(&self) -> zbus::fdo::Result<String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("watch state poisoned".to_string()))?
+            .source
+            .clone())
+    }
+
+    fn path(&self) -> zbus::fdo::Result<Vec<String>> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("watch state poisoned".to_string()))?
+            .path
+            .clone())
+    }
+
+    fn target(&self) -> zbus::fdo::Result<String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("watch state poisoned".to_string()))?
+            .target
+            .clone())
+    }
+
+    fn set_target(&self, target: String) -> zbus::fdo::Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("watch state poisoned".to_string()))?;
+        if state.target == target {
+            return Ok(false);
+        }
+        state.target = target;
+        Ok(true)
+    }
+}
+
+#[derive(Debug)]
+struct WatchState {
+    source: String,
+    path: Vec<String>,
+    target: String,
+}
+
+#[derive(Debug, Clone)]
+struct WatchIface {
+    object_path: String,
+    handle: WatchHandle,
+    manager: Arc<Mutex<WatchManager>>,
+}
+
+#[zbus::interface(name = "io.github.Locus.Watch")]
+impl WatchIface {
+    #[zbus(property)]
+    fn source(&self) -> zbus::fdo::Result<String> {
+        self.handle.source()
+    }
+
+    #[zbus(property, name = "Path")]
+    fn path_property(&self) -> zbus::fdo::Result<Vec<String>> {
+        self.handle.path()
+    }
+
+    #[zbus(property)]
+    fn target(&self) -> zbus::fdo::Result<String> {
+        self.handle.target()
+    }
+
+    async fn close(
+        &self,
+        #[zbus(object_server)] server: &ObjectServer,
+    ) -> zbus::fdo::Result<()> {
+        self.manager
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("watch manager poisoned".to_string()))?
+            .remove(&self.object_path);
+        server
+            .remove::<WatchIface, _>(self.object_path.as_str())
+            .await
+            .map_err(to_fdo_display)?;
+        Ok(())
     }
 }
 
@@ -53,6 +216,7 @@ where
             .map_err(to_fdo)?;
         if let LinkSetChange::Changed { removed, added } = change {
             emit_link_replacement::<B>(&emitter, removed, added, true).await?;
+            self.refresh_watches(emitter.connection()).await?;
             emit_resolve_changes::<B>(
                 &emitter,
                 self.backend.refresh_resolutions().map_err(to_fdo)?,
@@ -76,6 +240,7 @@ where
         Self::link_removed(&emitter, link.source, link.relation, link.target)
             .await
             .map_err(to_fdo_display)?;
+        self.refresh_watches(emitter.connection()).await?;
         emit_resolve_changes::<B>(
             &emitter,
             self.backend.refresh_resolutions().map_err(to_fdo)?,
@@ -101,6 +266,7 @@ where
                 .map_err(to_fdo_display)?;
         }
         if changed {
+            self.refresh_watches(emitter.connection()).await?;
             emit_resolve_changes::<B>(
                 &emitter,
                 self.backend.refresh_resolutions().map_err(to_fdo)?,
@@ -158,6 +324,7 @@ where
             )
             .await
             .map_err(to_fdo_display)?;
+            self.refresh_watches(emitter.connection()).await?;
             emit_resolve_changes::<B>(
                 &emitter,
                 self.backend.refresh_resolutions().map_err(to_fdo)?,
@@ -177,6 +344,7 @@ where
         Self::property_removed(&emitter, subject.to_string(), key.to_string())
             .await
             .map_err(to_fdo_display)?;
+        self.refresh_watches(emitter.connection()).await?;
         emit_resolve_changes::<B>(
             &emitter,
             self.backend.refresh_resolutions().map_err(to_fdo)?,
@@ -238,6 +406,35 @@ where
             .map_err(to_fdo)?
             .target
             .unwrap_or_else(|| NONE_STRING.to_string()))
+    }
+
+    async fn watch_node(
+        &self,
+        #[zbus(object_server)] server: &ObjectServer,
+        source: &str,
+        path: Vec<String>,
+    ) -> zbus::fdo::Result<OwnedObjectPath> {
+        let target = self
+            .backend
+            .resolve_path(source, &path)
+            .map_err(to_fdo)?
+            .unwrap_or_else(|| NONE_STRING.to_string());
+        let handle = self
+            .watches
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("watch manager poisoned".to_string()))?
+            .insert(source.to_string(), path, target);
+        let object_path = handle.object_path.clone();
+        let watch = WatchIface {
+            object_path: object_path.clone(),
+            handle,
+            manager: self.watches.clone(),
+        };
+        server
+            .at(object_path.as_str(), watch)
+            .await
+            .map_err(to_fdo_display)?;
+        OwnedObjectPath::try_from(object_path).map_err(to_fdo_display)
     }
 
     #[zbus(signal)]
@@ -441,6 +638,20 @@ where
         .map_err(to_fdo_display)?;
     }
     Ok(())
+}
+
+async fn emit_watch_target_changed(
+    conn: &Connection,
+    object_path: &str,
+    target: &str,
+) -> zbus::fdo::Result<()> {
+    let emitter = SignalEmitter::new(conn, object_path).map_err(to_fdo_display)?;
+    let interface = InterfaceName::try_from(WATCH_INTERFACE).map_err(to_fdo_display)?;
+    let target_value = Value::from(target);
+    let changed = HashMap::from([("Target", target_value)]);
+    zbus::fdo::Properties::properties_changed(&emitter, interface, changed, (&[]).into())
+        .await
+        .map_err(to_fdo_display)
 }
 
 fn to_fdo(error: GraphError) -> zbus::fdo::Error {

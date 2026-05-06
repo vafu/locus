@@ -9,6 +9,8 @@ use tokio::sync::mpsc;
 
 const WORKSPACE_RELATION: &str = "workspace";
 const WINDOW_RELATION: &str = "window";
+const SELECTED_WORKSPACE_RELATION: &str = "selected-workspace";
+const OUTPUT_RELATION: &str = "output";
 const SELECTED_CONTEXT: &str = "selected";
 
 #[derive(Debug, Parser)]
@@ -22,7 +24,10 @@ struct Args {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct NiriState {
     workspace_windows: BTreeSet<(String, String)>,
+    workspace_outputs: BTreeSet<(String, String)>,
+    properties: BTreeSet<(String, String, String)>,
     focused_window: Option<String>,
+    focused_workspace: Option<String>,
 }
 
 #[tokio::main]
@@ -143,12 +148,34 @@ async fn publish_state(client: &Client<'_>, previous: &NiriState, next: &NiriSta
     {
         add_workspace_window(client, workspace, window).await;
     }
+    for (workspace, output) in previous
+        .workspace_outputs
+        .difference(&next.workspace_outputs)
+    {
+        remove_workspace_output(client, workspace, output).await;
+    }
+    for (workspace, output) in next
+        .workspace_outputs
+        .difference(&previous.workspace_outputs)
+    {
+        add_workspace_output(client, workspace, output).await;
+    }
+    publish_metadata(client, next).await;
     if previous.focused_window != next.focused_window {
         set_or_clear_context(
             client,
             SELECTED_CONTEXT,
             WINDOW_RELATION,
             &next.focused_window,
+        )
+        .await;
+    }
+    if previous.focused_workspace != next.focused_workspace {
+        set_or_clear_context(
+            client,
+            SELECTED_CONTEXT,
+            SELECTED_WORKSPACE_RELATION,
+            &next.focused_workspace,
         )
         .await;
     }
@@ -174,6 +201,25 @@ async fn remove_workspace_window(client: &Client<'_>, workspace: &str, window: &
         .await;
 }
 
+async fn add_workspace_output(client: &Client<'_>, workspace: &str, output: &str) {
+    let _ = client.set_property(output, "kind", "output").await;
+    let _ = client.set_property(output, "source", "niri").await;
+    if let Some(connector) = output.strip_prefix("output:") {
+        let _ = client.set_property(output, "connector", connector).await;
+    }
+    let _ = client.set_link(workspace, OUTPUT_RELATION, output).await;
+}
+
+async fn remove_workspace_output(client: &Client<'_>, workspace: &str, output: &str) {
+    let _ = client.remove_link(workspace, OUTPUT_RELATION, output).await;
+}
+
+async fn publish_metadata(client: &Client<'_>, state: &NiriState) {
+    for (subject, key, value) in &state.properties {
+        let _ = client.set_property(subject, key, value).await;
+    }
+}
+
 async fn clear_existing_niri_edges(client: &Client<'_>) {
     let Ok(links) = client.get_all_links().await else {
         return;
@@ -182,9 +228,17 @@ async fn clear_existing_niri_edges(client: &Client<'_>) {
     for (source, relation, target) in links {
         let is_workspace_window =
             relation == WINDOW_RELATION && source == context_subject(SELECTED_CONTEXT);
+        let is_selected_workspace =
+            relation == SELECTED_WORKSPACE_RELATION && source == context_subject(SELECTED_CONTEXT);
         let is_window_workspace = relation == WORKSPACE_RELATION
             && (source.starts_with("window:") || source.starts_with("niri:window:"));
-        if is_workspace_window || is_window_workspace {
+        let is_workspace_output = relation == OUTPUT_RELATION
+            && (source.starts_with("workspace:") || source.starts_with("niri:workspace:"));
+        if is_workspace_window
+            || is_selected_workspace
+            || is_window_workspace
+            || is_workspace_output
+        {
             let _ = client.remove_link(&source, &relation, &target).await;
         }
     }
@@ -195,8 +249,14 @@ async fn clear_existing_niri_edges(client: &Client<'_>) {
     let _ = client
         .remove_links(&context_subject(SELECTED_CONTEXT), WINDOW_RELATION)
         .await;
+    let _ = client
+        .remove_links(
+            &context_subject(SELECTED_CONTEXT),
+            SELECTED_WORKSPACE_RELATION,
+        )
+        .await;
 
-    for kind in ["window", "workspace"] {
+    for kind in ["window", "workspace", "output"] {
         let Ok(subjects) = client.find_subjects_opt("kind", Some(kind)).await else {
             continue;
         };
@@ -211,18 +271,22 @@ async fn clear_existing_niri_edges(client: &Client<'_>) {
             if is_niri_node
                 || subject.starts_with("window:")
                 || subject.starts_with("workspace:")
+                || subject.starts_with("output:")
                 || subject.starts_with("niri:window:")
                 || subject.starts_with("niri:workspace:")
             {
                 let _ = client.remove_property(&subject, "kind").await;
                 let _ = client.remove_property(&subject, "source").await;
                 let _ = client.remove_property(&subject, "external-id").await;
+                let _ = client.remove_property(&subject, "connector").await;
             }
         }
     }
 }
 
 fn state_to_niri_state(state: &EventStreamState) -> NiriState {
+    let mut properties = BTreeSet::new();
+
     let workspace_windows = state
         .windows
         .windows
@@ -232,6 +296,118 @@ fn state_to_niri_state(state: &EventStreamState) -> NiriState {
             Some((workspace_subject(workspace_id), window_subject(window.id)))
         })
         .collect();
+
+    for window in state.windows.windows.values() {
+        let subject = window_subject(window.id);
+        insert_property(&mut properties, &subject, "kind", "window");
+        insert_property(&mut properties, &subject, "source", "niri");
+        insert_property(
+            &mut properties,
+            &subject,
+            "external-id",
+            window.id.to_string(),
+        );
+        insert_property(
+            &mut properties,
+            &subject,
+            "title",
+            window.title.as_deref().unwrap_or_default(),
+        );
+        insert_property(
+            &mut properties,
+            &subject,
+            "app-id",
+            window.app_id.as_deref().unwrap_or_default(),
+        );
+        insert_property(
+            &mut properties,
+            &subject,
+            "focused",
+            window.is_focused.to_string(),
+        );
+        insert_property(
+            &mut properties,
+            &subject,
+            "urgent",
+            window.is_urgent.to_string(),
+        );
+        if let Some((column, row)) = window.layout.pos_in_scrolling_layout {
+            insert_property(&mut properties, &subject, "column", column.to_string());
+            insert_property(&mut properties, &subject, "row", row.to_string());
+        }
+        insert_property(
+            &mut properties,
+            &subject,
+            "tile-width",
+            window.layout.tile_size.0.to_string(),
+        );
+        insert_property(
+            &mut properties,
+            &subject,
+            "tile-height",
+            window.layout.tile_size.1.to_string(),
+        );
+    }
+
+    let workspace_outputs: BTreeSet<(String, String)> = state
+        .workspaces
+        .workspaces
+        .values()
+        .filter_map(|workspace| {
+            let output = workspace.output.as_ref()?;
+            Some((workspace_subject(workspace.id), output_subject(output)))
+        })
+        .collect();
+
+    for workspace in state.workspaces.workspaces.values() {
+        let subject = workspace_subject(workspace.id);
+        insert_property(&mut properties, &subject, "kind", "workspace");
+        insert_property(&mut properties, &subject, "source", "niri");
+        insert_property(
+            &mut properties,
+            &subject,
+            "external-id",
+            workspace.id.to_string(),
+        );
+        insert_property(&mut properties, &subject, "idx", workspace.idx.to_string());
+        insert_property(
+            &mut properties,
+            &subject,
+            "name",
+            workspace
+                .name
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| workspace.idx.to_string()),
+        );
+        insert_property(
+            &mut properties,
+            &subject,
+            "active",
+            workspace.is_active.to_string(),
+        );
+        insert_property(
+            &mut properties,
+            &subject,
+            "focused",
+            workspace.is_focused.to_string(),
+        );
+        insert_property(
+            &mut properties,
+            &subject,
+            "urgent",
+            workspace.is_urgent.to_string(),
+        );
+    }
+
+    for pair in &workspace_outputs {
+        let output = &pair.1;
+        insert_property(&mut properties, output, "kind", "output");
+        insert_property(&mut properties, output, "source", "niri");
+        if let Some(connector) = output.strip_prefix("output:") {
+            insert_property(&mut properties, output, "connector", connector);
+        }
+    }
 
     let focused_workspace = state
         .workspaces
@@ -251,11 +427,24 @@ fn state_to_niri_state(state: &EventStreamState) -> NiriState {
                 .and_then(|workspace| workspace.active_window_id)
                 .map(window_subject)
         });
+    let focused_workspace = focused_workspace.map(|workspace| workspace_subject(workspace.id));
 
     NiriState {
         workspace_windows,
+        workspace_outputs,
+        properties,
         focused_window,
+        focused_workspace,
     }
+}
+
+fn insert_property(
+    properties: &mut BTreeSet<(String, String, String)>,
+    subject: &str,
+    key: &str,
+    value: impl Into<String>,
+) {
+    properties.insert((subject.to_string(), key.to_string(), value.into()));
 }
 
 fn workspace_subject(id: u64) -> String {
@@ -264,6 +453,10 @@ fn workspace_subject(id: u64) -> String {
 
 fn window_subject(id: u64) -> String {
     format!("window:{id}")
+}
+
+fn output_subject(name: &str) -> String {
+    format!("output:{name}")
 }
 
 fn context_subject(context: &str) -> String {
