@@ -10,3 +10,6 @@ locus-core = { path = "../locus-core" }
 locus-dbus = { path = "../locus-dbus" }
 locus-schema = { path = "../locus-schema" }
 tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1.44"
+tracing-perfetto = "0.1.5"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }

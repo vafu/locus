@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 locus-api = { path = "../locus-api" }
+tracing = "0.1.44"
 zbus = { version = "5.15.0", default-features = false, features = ["tokio"] }

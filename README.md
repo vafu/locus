@@ -271,17 +271,17 @@ It publishes generic Locus node IDs:
 
 ```text
 context:selected --window--> window:<focused-or-active-window>
+context:selected --selected-workspace--> workspace:<focused-workspace>
 window:<id> --workspace--> workspace:<id>
 window:<id>[kind] = window
 workspace:<id>[kind] = workspace
 ```
 
-It intentionally does not publish `context:selected --workspace`. Workspace and
-project context are derived:
+Project context is derived from the selected workspace:
 
 ```sh
-locusctl resolve context:selected window workspace
-locusctl resolve context:selected window workspace project
+locusctl resolve context:selected selected-workspace
+locusctl resolve context:selected selected-workspace project
 ```
 
 ### `locus-graph`

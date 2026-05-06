@@ -6,6 +6,7 @@ use crate::resolve::{resolve_all, resolve_kind, resolve_one};
 use crate::state::RuntimeState;
 use locus_api::{Graph, GraphError, GraphResult, Link, LinkSetChange, PropertyChange, Resolution};
 use locus_schema::{Cardinality, GraphSchema, SchemaError};
+use tracing::trace;
 
 #[derive(Debug)]
 struct Inner {
@@ -185,6 +186,8 @@ impl LocusService {
         key: &str,
         value: &str,
     ) -> Result<PropertyChange, ServiceError> {
+        let span = tracing::trace_span!("core.set_property", subject, key);
+        let _guard = span.enter();
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
         let visible_before = inner.state.property(subject, key);
         inner
@@ -256,6 +259,8 @@ impl LocusService {
         source: &str,
         path: &[String],
     ) -> Result<Option<String>, ServiceError> {
+        let span = tracing::trace_span!("core.resolve_path", source, path = ?path);
+        let _guard = span.enter();
         let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
         resolve_one(&inner.state, source, path)
     }
@@ -283,6 +288,8 @@ impl LocusService {
     }
 
     pub fn refresh_resolutions(&self) -> Result<Vec<Resolution>, ServiceError> {
+        let span = tracing::trace_span!("core.refresh_resolutions");
+        let _guard = span.enter();
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
         let keys = inner.resolutions.keys().cloned().collect::<Vec<_>>();
         let mut changed = Vec::new();
@@ -305,6 +312,7 @@ impl LocusService {
             }
         }
 
+        trace!(changed = changed.len(), "resolutions refreshed");
         Ok(changed)
     }
 
@@ -314,6 +322,8 @@ impl LocusService {
         relation: &str,
         target: &str,
     ) -> Result<LinkSetChange, ServiceError> {
+        let span = tracing::trace_span!("core.set_link", source, relation, target);
+        let _guard = span.enter();
         let link = Link::new(source, relation, target);
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
         let spec = inner
