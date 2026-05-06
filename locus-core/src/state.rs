@@ -1,29 +1,6 @@
+use locus_api::Link;
+use locus_schema::PropertySource;
 use std::collections::{BTreeMap, BTreeSet};
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Link {
-    pub source: String,
-    pub relation: String,
-    pub target: String,
-}
-
-impl Link {
-    pub fn new(source: &str, relation: &str, target: &str) -> Self {
-        Self {
-            source: source.to_string(),
-            relation: relation.to_string(),
-            target: target.to_string(),
-        }
-    }
-
-    pub fn to_tuple(&self) -> (String, String, String) {
-        (
-            self.source.clone(),
-            self.relation.clone(),
-            self.target.clone(),
-        )
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeState {
@@ -50,5 +27,11 @@ impl RuntimeState {
         self.properties
             .get(&(subject.to_string(), key.to_string()))
             .cloned()
+    }
+}
+
+impl PropertySource for RuntimeState {
+    fn property(&self, subject: &str, key: &str) -> Option<String> {
+        self.property(subject, key)
     }
 }

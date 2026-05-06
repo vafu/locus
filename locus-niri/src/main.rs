@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use locus::Client;
+use locus_dbus::{Client, ClientExt};
 use niri_ipc::state::{EventStreamState, EventStreamStatePart};
 use niri_ipc::{Event, Request, Response, socket::Socket};
 use tokio::sync::mpsc;
@@ -156,27 +156,34 @@ async fn publish_state(client: &Client<'_>, previous: &NiriState, next: &NiriSta
 
 async fn add_workspace_window(client: &Client<'_>, workspace: &str, window: &str) {
     let _ = client.set_property(workspace, "kind", "workspace").await;
+    let _ = client.set_property(workspace, "source", "niri").await;
+    if let Some(id) = workspace.strip_prefix("workspace:") {
+        let _ = client.set_property(workspace, "external-id", id).await;
+    }
     let _ = client.set_property(window, "kind", "window").await;
+    let _ = client.set_property(window, "source", "niri").await;
+    if let Some(id) = window.strip_prefix("window:") {
+        let _ = client.set_property(window, "external-id", id).await;
+    }
     let _ = client.set_link(window, WORKSPACE_RELATION, workspace).await;
 }
 
 async fn remove_workspace_window(client: &Client<'_>, workspace: &str, window: &str) {
-    let _ = client.remove_link(workspace, WINDOW_RELATION, window).await;
     let _ = client
         .remove_link(window, WORKSPACE_RELATION, workspace)
         .await;
 }
 
 async fn clear_existing_niri_edges(client: &Client<'_>) {
-    let Ok(links) = client.all_links().await else {
+    let Ok(links) = client.get_all_links().await else {
         return;
     };
 
     for (source, relation, target) in links {
         let is_workspace_window =
-            relation == WINDOW_RELATION && source.starts_with("niri:workspace:");
-        let is_window_workspace =
-            relation == WORKSPACE_RELATION && source.starts_with("niri:window:");
+            relation == WINDOW_RELATION && source == context_subject(SELECTED_CONTEXT);
+        let is_window_workspace = relation == WORKSPACE_RELATION
+            && (source.starts_with("window:") || source.starts_with("niri:window:"));
         if is_workspace_window || is_window_workspace {
             let _ = client.remove_link(&source, &relation, &target).await;
         }
@@ -190,12 +197,26 @@ async fn clear_existing_niri_edges(client: &Client<'_>) {
         .await;
 
     for kind in ["window", "workspace"] {
-        let Ok(subjects) = client.find_subjects("kind", Some(kind)).await else {
+        let Ok(subjects) = client.find_subjects_opt("kind", Some(kind)).await else {
             continue;
         };
         for subject in subjects {
-            if subject.starts_with("niri:window:") || subject.starts_with("niri:workspace:") {
+            let is_niri_node = client
+                .property_opt(&subject, "source")
+                .await
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some("niri");
+            if is_niri_node
+                || subject.starts_with("window:")
+                || subject.starts_with("workspace:")
+                || subject.starts_with("niri:window:")
+                || subject.starts_with("niri:workspace:")
+            {
                 let _ = client.remove_property(&subject, "kind").await;
+                let _ = client.remove_property(&subject, "source").await;
+                let _ = client.remove_property(&subject, "external-id").await;
             }
         }
     }
@@ -238,11 +259,11 @@ fn state_to_niri_state(state: &EventStreamState) -> NiriState {
 }
 
 fn workspace_subject(id: u64) -> String {
-    format!("niri:workspace:{id}")
+    format!("workspace:{id}")
 }
 
 fn window_subject(id: u64) -> String {
-    format!("niri:window:{id}")
+    format!("window:{id}")
 }
 
 fn context_subject(context: &str) -> String {

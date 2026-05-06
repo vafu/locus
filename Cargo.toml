@@ -1,30 +1,12 @@
-[package]
-name = "locus"
-version = "0.1.0"
-edition = "2024"
-
-[features]
-default = ["cli", "server"]
-cli = [
-    "server",
-    "dep:anyhow",
-    "dep:cel",
-    "dep:clap",
-    "dep:futures-util",
-    "dep:niri-ipc",
-    "dep:tokio",
+[workspace]
+members = [
+    "locus-api",
+    "locus-core",
+    "locus-dbus",
+    "locus-graph",
+    "locus-niri",
+    "locusctl",
+    "locusd",
+    "locus-schema",
 ]
-server = [
-    "dep:thiserror",
-    "dep:tokio",
-]
-
-[dependencies]
-anyhow = { version = "1.0.100", optional = true }
-cel = { version = "0.13.0", optional = true }
-clap = { version = "4.5.56", features = ["derive"], optional = true }
-futures-util = { version = "0.3.32", optional = true }
-niri-ipc = { version = "=25.11.0", optional = true }
-thiserror = { version = "2.0.18", optional = true }
-tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"], optional = true }
-zbus = { version = "5.15.0", default-features = false, features = ["tokio"] }
+resolver = "3"

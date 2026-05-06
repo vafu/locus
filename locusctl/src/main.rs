@@ -7,7 +7,7 @@ use anyhow::{Context as AnyhowContext, bail};
 use cel::{Context as CelContext, Program as CelProgram, Value as CelValue};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use futures_util::StreamExt;
-use locus::api::{GraphProxy, LocusClient};
+use locus_dbus::{ClientExt, GraphProxy, LocusClient};
 
 #[derive(Debug, Parser)]
 #[command(name = "locusctl")]
@@ -32,12 +32,13 @@ enum Command {
         command: ContextCommand,
     },
     Resolve(ResolveArgs),
+    ResolveAll(ResolveArgs),
+    FindNearest(FindNearestArgs),
     Watch(WatchArgs),
 }
 
 #[derive(Debug, Subcommand)]
 enum LinkCommand {
-    Add(LinkAdd),
     Set(LinkAdd),
     Remove(LinkRemove),
     Clear(LinkClear),
@@ -134,6 +135,12 @@ struct ContextGet {
 
 #[derive(Debug, ClapArgs)]
 struct ResolveArgs {
+    source: String,
+    path: Vec<String>,
+}
+
+#[derive(Debug, ClapArgs)]
+struct FindNearestArgs {
     source: String,
     kind: String,
 }
@@ -245,11 +252,6 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command {
         Command::Link { command } => match command {
-            LinkCommand::Add(args) => {
-                client
-                    .add_link(&args.source, &args.relation, &args.target)
-                    .await?;
-            }
             LinkCommand::Set(args) => {
                 client
                     .set_link(&args.source, &args.relation, &args.target)
@@ -265,23 +267,23 @@ async fn main() -> anyhow::Result<()> {
             }
             LinkCommand::Targets(args) => {
                 print_query(
-                    client.targets(&args.subject, &args.relation).await?,
+                    client.get_targets(&args.subject, &args.relation).await?,
                     args.first,
                 );
             }
             LinkCommand::Sources(args) => {
                 print_query(
-                    client.sources(&args.subject, &args.relation).await?,
+                    client.get_sources(&args.subject, &args.relation).await?,
                     args.first,
                 );
             }
             LinkCommand::List { subject } => {
-                for (source, relation, target) in client.links(&subject).await? {
+                for (source, relation, target) in client.get_links(&subject).await? {
                     println!("{source}\t{relation}\t{target}");
                 }
             }
             LinkCommand::All => {
-                for (source, relation, target) in client.all_links().await? {
+                for (source, relation, target) in client.get_all_links().await? {
                     println!("{source}\t{relation}\t{target}");
                 }
             }
@@ -293,13 +295,13 @@ async fn main() -> anyhow::Result<()> {
                     .await?;
             }
             PropCommand::Get(args) => {
-                if let Some(value) = client.property(&args.subject, &args.key).await? {
+                if let Some(value) = client.property_opt(&args.subject, &args.key).await? {
                     println!("{value}");
                 }
             }
             PropCommand::List { subject } => {
                 let mut properties = client
-                    .properties(&subject)
+                    .get_properties(&subject)
                     .await?
                     .into_iter()
                     .collect::<Vec<_>>();
@@ -310,11 +312,13 @@ async fn main() -> anyhow::Result<()> {
             }
             PropCommand::Subjects(args) => {
                 let subjects = if let Some(key) = args.key {
-                    client.find_subjects(&key, args.value.as_deref()).await?
+                    client
+                        .find_subjects_opt(&key, args.value.as_deref())
+                        .await?
                 } else if args.value.is_some() {
                     bail!("--value requires --key");
                 } else {
-                    client.subjects().await?
+                    client.get_subjects().await?
                 };
                 print_lines(subjects);
             }
@@ -336,7 +340,15 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Command::Resolve(args) => {
-            if let Some(subject) = client.resolve(&args.source, &args.kind).await? {
+            if let Some(subject) = client.resolve_opt(&args.source, args.path).await? {
+                println!("{subject}");
+            }
+        }
+        Command::ResolveAll(args) => {
+            print_lines(client.resolve_all(&args.source, args.path).await?);
+        }
+        Command::FindNearest(args) => {
+            if let Some(subject) = client.find_nearest_opt(&args.source, &args.kind).await? {
                 println!("{subject}");
             }
         }
@@ -506,7 +518,7 @@ async fn event_matches(
         let Some(subject) = event.subject() else {
             return Ok(false);
         };
-        let properties = client.properties(subject).await?;
+        let properties = client.get_properties(subject).await?;
         if args
             .missing_properties
             .iter()

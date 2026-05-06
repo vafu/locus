@@ -1,0 +1,10 @@
+[package]
+name = "locus-graph"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+locus-dbus = { path = "../locus-dbus" }
+tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
+zbus = { version = "5.15.0", default-features = false, features = ["tokio"] }

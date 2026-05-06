@@ -1,0 +1,8 @@
+[package]
+name = "locus-dbus"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+locus-api = { path = "../locus-api" }
+zbus = { version = "5.15.0", default-features = false, features = ["tokio"] }

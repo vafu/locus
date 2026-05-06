@@ -1,0 +1,59 @@
+nodes:
+  context: {}
+  window:
+    properties:
+      source: {}
+      external-id: {}
+  workspace:
+    properties:
+      source: {}
+      external-id: {}
+  project:
+    properties:
+      path:
+        required: true
+      name: {}
+      icon: {}
+  agent-session:
+    properties:
+      cwd: {}
+      model: {}
+
+relations:
+  window:
+    from:
+      exact: context:selected
+    to: window
+    cardinality: many-to-one
+
+  workspace:
+    from: window
+    to: workspace
+    cardinality: many-to-one
+
+  project:
+    from: workspace
+    to: project
+    cardinality: one-to-one
+
+  agent-session:
+    from: window
+    to: agent-session
+    cardinality: one-to-one
+
+paths:
+  selected-window:
+    from: context:selected
+    path: [window]
+
+  selected-workspace:
+    from: context:selected
+    path: [window, workspace]
+
+  selected-project:
+    from: context:selected
+    path: [window, workspace, project]
+
+  selected-agent-session:
+    from: context:selected
+    path: [window, agent-session]
