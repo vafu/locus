@@ -95,6 +95,8 @@ pub struct PathSpec {
     pub source: String,
     /// Ordered relation names to traverse.
     pub path: Vec<String>,
+    /// Whether consumers should treat this path as a multi-target traversal.
+    pub many: bool,
 }
 
 /// Minimal property lookup interface used during relation validation.
@@ -270,6 +272,8 @@ struct RawRelation {
 struct RawPath {
     from: String,
     path: Vec<String>,
+    #[serde(default)]
+    many: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -318,6 +322,7 @@ impl TryFrom<RawSchema> for GraphSchema {
                         name,
                         source: path.from,
                         path: path.path,
+                        many: path.many,
                     },
                 )
             })
@@ -484,6 +489,10 @@ paths:
   selected-project:
     from: context:selected
     path: [window, workspace, project]
+  workspace-projects:
+    from: workspace
+    path: [project]
+    many: true
 "#,
         )
         .unwrap();
@@ -498,6 +507,7 @@ paths:
             schema.path("selected-project").unwrap().path,
             vec!["window", "workspace", "project"]
         );
+        assert!(schema.path("workspace-projects").unwrap().many);
     }
 
     #[test]
