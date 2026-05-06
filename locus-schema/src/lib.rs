@@ -1,72 +1,157 @@
+//! Schema parsing and validation for Locus graphs.
+//!
+//! Locus itself is a generic property graph. The schema gives publishers and
+//! clients a shared vocabulary for node kinds, relation cardinality, required
+//! properties, and named relation paths.
+//!
+//! The daemon uses this crate to reject invalid writes. Code generators use the
+//! same parsed schema to produce typed client helpers, so the YAML schema stays
+//! the source of truth for both runtime validation and language bindings.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
 
+/// Cardinality for one side of a relation.
+///
+/// `RelationSpec` stores cardinality as two directional limits:
+/// `sources_per_target` and `targets_per_source`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cardinality {
+    /// At most one item is allowed on this side.
     One,
+    /// Any number of items is allowed on this side.
     Many,
 }
 
+/// A schema selector for the source or target node of a relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeSelector {
+    /// Match one exact node id, for example `context:selected`.
     Exact(String),
+    /// Match any node whose `kind` property equals this value.
     Kind(String),
+    /// Match any node. If the node has a known `kind`, required properties for
+    /// that kind are still enforced.
     Any,
 }
 
+/// Runtime validation rules for a named relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationSpec {
+    /// Relation name as used in graph links.
     pub relation: String,
+    /// Allowed source node selector.
     pub source: NodeSelector,
+    /// Allowed target node selector.
     pub target: NodeSelector,
+    /// How many sources may point at a single target.
     pub sources_per_target: Cardinality,
+    /// How many targets may be attached to a single source.
     pub targets_per_source: Cardinality,
 }
 
+/// Parsed graph schema.
+///
+/// Schema sections:
+///
+/// - `nodes`: node kind declarations and property metadata.
+/// - `relations`: relation selectors and cardinality.
+/// - `paths`: named relation paths for clients and codegen.
 #[derive(Debug, Clone, Default)]
 pub struct GraphSchema {
     nodes: BTreeMap<String, NodeSpec>,
     relations: BTreeMap<String, RelationSpec>,
+    paths: BTreeMap<String, PathSpec>,
 }
 
+/// Properties known for one node kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeSpec {
+    /// Property declarations keyed by property name.
     pub properties: BTreeMap<String, PropertySpec>,
 }
 
+/// Metadata for one property.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PropertySpec {
+    /// Whether this property must exist before a node participates in a
+    /// schema-validated relation.
     pub required: bool,
 }
 
+/// A named relation path.
+///
+/// Paths are not used to validate writes. They document and generate common
+/// read-side traversals such as `context:selected -> window -> workspace ->
+/// project`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathSpec {
+    /// Path name as declared in YAML.
+    pub name: String,
+    /// Source node id for this path.
+    pub source: String,
+    /// Ordered relation names to traverse.
+    pub path: Vec<String>,
+}
+
+/// Minimal property lookup interface used during relation validation.
 pub trait PropertySource {
+    /// Return a property value for `subject` and `key`, if one exists.
     fn property(&self, subject: &str, key: &str) -> Option<String>;
 }
 
 impl GraphSchema {
+    /// Load and parse a schema from a YAML file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, SchemaError> {
         let text = fs::read_to_string(path)?;
         Self::parse_yaml(&text)
     }
 
+    /// Parse a YAML schema string.
     pub fn parse_yaml(text: &str) -> Result<Self, SchemaError> {
         let raw: RawSchema = serde_yaml::from_str(text)?;
         raw.try_into()
     }
 
+    /// Return all declared node kinds.
+    pub fn nodes(&self) -> &BTreeMap<String, NodeSpec> {
+        &self.nodes
+    }
+
+    /// Return all declared relations.
+    pub fn relations(&self) -> &BTreeMap<String, RelationSpec> {
+        &self.relations
+    }
+
+    /// Return all declared named paths.
+    pub fn paths(&self) -> &BTreeMap<String, PathSpec> {
+        &self.paths
+    }
+
+    /// Look up a relation by name.
     pub fn relation(&self, relation: &str) -> Option<&RelationSpec> {
         self.relations.get(relation)
     }
 
+    /// Look up a node kind by name.
     pub fn node(&self, kind: &str) -> Option<&NodeSpec> {
         self.nodes.get(kind)
+    }
+
+    /// Look up a named path by name.
+    pub fn path(&self, name: &str) -> Option<&PathSpec> {
+        self.paths.get(name)
     }
 }
 
 impl RelationSpec {
+    /// Validate that `source --relation--> target` matches this relation spec.
+    ///
+    /// Cardinality replacement is handled by the graph runtime. This method
+    /// only checks source/target selectors and required properties.
     pub fn validate(
         &self,
         schema: &GraphSchema,
@@ -156,6 +241,8 @@ struct RawSchema {
     nodes: BTreeMap<String, RawNode>,
     #[serde(default)]
     relations: BTreeMap<String, RawRelation>,
+    #[serde(default)]
+    paths: BTreeMap<String, RawPath>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -177,6 +264,12 @@ struct RawRelation {
     #[serde(default)]
     to: RawNodeSelector,
     cardinality: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPath {
+    from: String,
+    path: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -215,7 +308,25 @@ impl TryFrom<RawSchema> for GraphSchema {
                 },
             );
         }
-        Ok(Self { nodes, relations })
+        let paths = raw
+            .paths
+            .into_iter()
+            .map(|(name, path)| {
+                (
+                    name.clone(),
+                    PathSpec {
+                        name,
+                        source: path.from,
+                        path: path.path,
+                    },
+                )
+            })
+            .collect();
+        Ok(Self {
+            nodes,
+            relations,
+            paths,
+        })
     }
 }
 
@@ -345,4 +456,63 @@ fn validate_required_properties_for_kind(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_nodes_relations_and_paths() {
+        let schema = GraphSchema::parse_yaml(
+            r#"
+nodes:
+  workspace: {}
+  project:
+    properties:
+      path:
+        required: true
+      name: {}
+
+relations:
+  project:
+    from: workspace
+    to: project
+    cardinality: one-to-one
+
+paths:
+  selected-project:
+    from: context:selected
+    path: [window, workspace, project]
+"#,
+        )
+        .unwrap();
+
+        assert!(schema.node("project").is_some());
+        assert!(schema.node("project").unwrap().properties["path"].required);
+        assert_eq!(
+            schema.relation("project").unwrap().source,
+            NodeSelector::Kind("workspace".to_string())
+        );
+        assert_eq!(
+            schema.path("selected-project").unwrap().path,
+            vec!["window", "workspace", "project"]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_cardinality() {
+        let error = GraphSchema::parse_yaml(
+            r#"
+relations:
+  project:
+    from: workspace
+    to: project
+    cardinality: sometimes
+"#,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, SchemaError::InvalidCardinality { .. }));
+    }
 }

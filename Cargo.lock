@@ -570,6 +570,15 @@ name = "locus-api"
 version = "0.1.0"
 
 [[package]]
+name = "locus-codegen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "locus-schema",
+]
+
+[[package]]
 name = "locus-core"
 version = "0.1.0"
 dependencies = [

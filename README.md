@@ -112,6 +112,7 @@ The repository is a Cargo workspace. Each crate owns one responsibility:
 
 ```text
 locus-api     transport-neutral graph trait and shared graph types
+locus-codegen TypeScript helper generator from schema.yaml
 locus-core    in-memory graph runtime and schema-enforced graph behavior
 locus-dbus    D-Bus adapter, generated proxy, client helpers, wire conventions
 locus-schema  schema model, YAML parser, validation helpers
@@ -292,9 +293,24 @@ locus-graph
 # http://127.0.0.1:8765
 ```
 
+### `locus-codegen`
+
+Generates TypeScript helpers from the schema:
+
+```sh
+cargo run -p locus-codegen -- --schema schema.yaml
+cargo run -p locus-codegen -- --schema schema.yaml --out /tmp/locus.generated.ts
+```
+
+The generated file contains `NodeKind`, `Relation`, and `NamedPath` unions, a
+`locusSchema` constant, a small `LocusDbusClient` interface, and
+`LocusSchemaClient` helpers such as `selectedProject()` and
+`subscribeSelectedProject()`.
+
 Install all Locus binaries from the workspace with:
 
 ```sh
+cargo install --path locus-codegen
 cargo install --path locusd
 cargo install --path locusctl
 cargo install --path locus-niri

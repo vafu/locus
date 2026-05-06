@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "locus-api",
+    "locus-codegen",
     "locus-core",
     "locus-dbus",
     "locus-graph",

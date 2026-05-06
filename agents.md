@@ -6,6 +6,7 @@ Keep the workspace split by responsibility:
 
 ```text
 locus-api     transport-neutral graph trait and shared graph types
+locus-codegen TypeScript helper generator from schema.yaml
 locus-core    in-memory graph runtime and schema-enforced graph behavior
 locus-dbus    D-Bus adapter, generated proxy, client helpers, wire conventions
 locus-schema  schema model, YAML parser, validation helpers, codegen input
@@ -79,6 +80,7 @@ wrap `locus-api::Graph`.
 Binary crates should be thin:
 
 - `locusd` exposes the daemon runtime over D-Bus.
+- `locus-codegen` generates typed client helpers from schema.
 - `locusctl` is a CLI over `locus-dbus`.
 - `locus-niri` publishes Niri state through `locus-dbus`.
 - `locus-graph` visualizes state through `locus-dbus`.
