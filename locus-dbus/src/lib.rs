@@ -173,10 +173,7 @@ impl WatchIface {
         self.handle.target()
     }
 
-    async fn close(
-        &self,
-        #[zbus(object_server)] server: &ObjectServer,
-    ) -> zbus::fdo::Result<()> {
+    async fn close(&self, #[zbus(object_server)] server: &ObjectServer) -> zbus::fdo::Result<()> {
         self.manager
             .lock()
             .map_err(|_| zbus::fdo::Error::Failed("watch manager poisoned".to_string()))?

@@ -178,9 +178,12 @@ const INDEX_HTML: &str = r##"<!doctype html>
     * { box-sizing: border-box; }
     body { margin: 0; height: 100vh; overflow: hidden; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, sans-serif; }
     #app { display: grid; grid-template-columns: minmax(0, 1fr) 360px; height: 100vh; }
-    #graph { width: 100%; height: 100%; cursor: grab; }
+    body.panel-hidden #app { grid-template-columns: minmax(0, 1fr); }
+    body.panel-hidden aside { display: none; }
+    #graph { width: 100%; height: 100%; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
     #graph:active { cursor: grabbing; }
     aside { border-left: 1px solid #2a2f3b; background: var(--panel); display: grid; grid-template-rows: auto auto auto minmax(0,1fr); min-width: 0; }
+    #panel-toggle { position: fixed; right: 12px; top: 12px; z-index: 10; background: #242a35; color: var(--fg); border: 1px solid #3a4252; border-radius: 6px; padding: 7px 10px; box-shadow: 0 8px 24px #0008; }
     header { padding: 14px 16px; border-bottom: 1px solid #2a2f3b; }
     h1 { margin: 0; font-size: 15px; }
     #stats { margin-top: 4px; color: var(--dim); }
@@ -210,10 +213,26 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .node.agent-session circle { fill: #2f2638; stroke: #cb91f2; }
     .node text { fill: var(--fg); font-size: 13px; pointer-events: none; text-anchor: middle; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
     .node.selected circle { stroke-width: 3; }
+    @media (max-width: 760px) {
+      #app { grid-template-columns: minmax(0, 1fr); }
+      aside { position: fixed; inset: 0 0 0 auto; width: min(88vw, 360px); z-index: 9; box-shadow: -20px 0 40px #0008; }
+      header { padding: 10px 12px; }
+      #details { padding: 10px 12px; min-height: 86px; max-height: 26vh; overflow: auto; }
+      #controls { padding: 10px 12px; gap: 10px; }
+      #controls label { grid-template-columns: minmax(0, 1fr) 48px; gap: 4px 8px; }
+      #controls label span { grid-column: 1; }
+      #controls label input { grid-column: 1 / -1; grid-row: 2; }
+      #controls label output { grid-column: 2; grid-row: 1; }
+      .control-actions { flex-wrap: wrap; }
+      .control-actions button { min-height: 34px; }
+      #log { display: none; }
+      body.panel-hidden aside { display: none; }
+    }
   </style>
 </head>
 <body>
 <div id="app">
+  <button id="panel-toggle" type="button" aria-expanded="true">Hide panel</button>
   <svg id="graph">
     <defs>
       <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
@@ -239,12 +258,15 @@ const stats = document.getElementById('stats');
 const details = document.getElementById('details');
 const controls = document.getElementById('controls');
 const log = document.getElementById('log');
+const panelToggle = document.getElementById('panel-toggle');
 let graph = { nodes: [], links: [] };
 let nodeState = new Map();
 let previousLinks = new Set();
 let selected = '';
 let pan = { x: 0, y: 0, scale: 1 };
 let drag = null;
+let pointers = new Map();
+let pinch = null;
 let paused = false;
 const defaults = {
   linkDistance: 72,
@@ -255,11 +277,24 @@ const defaults = {
   initialSpread: 3,
 };
 let params = { ...defaults, ...JSON.parse(localStorage.getItem('locusGraphParams') || '{}') };
+let panelHidden = JSON.parse(localStorage.getItem('locusGraphPanelHidden') || (window.innerWidth <= 760 ? 'true' : 'false'));
 
 function key(l) { return `${l.source}\t${l.relation}\t${l.target}`; }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function kind(id) { return id.includes(':') ? id.split(':')[0] : 'node'; }
 function radius(n) { return Math.max(22, Math.min(44, 13 + n.label.length * 2.2)); }
+
+function updatePanelVisibility() {
+  document.body.classList.toggle('panel-hidden', panelHidden);
+  panelToggle.textContent = panelHidden ? 'Show panel' : 'Hide panel';
+  panelToggle.setAttribute('aria-expanded', String(!panelHidden));
+}
+
+panelToggle.addEventListener('click', () => {
+  panelHidden = !panelHidden;
+  localStorage.setItem('locusGraphPanelHidden', JSON.stringify(panelHidden));
+  updatePanelVisibility();
+});
 
 function makeControls() {
   const specs = [
@@ -435,7 +470,16 @@ function draw() {
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     g.setAttribute('class', `node ${kind(n.id)} ${selected === n.id ? 'selected' : ''}`);
     g.setAttribute('transform', `translate(${s.x},${s.y})`);
-    g.addEventListener('pointerdown', e => { e.stopPropagation(); selected = n.id; s.fixed = true; drag = { type: 'node', id: n.id }; updateDetails(); });
+    g.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      svg.setPointerCapture?.(e.pointerId);
+      selected = n.id;
+      s.fixed = true;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      drag = { type: 'node', id: n.id, pointerId: e.pointerId };
+      updateDetails();
+    });
     g.addEventListener('dblclick', () => { s.fixed = false; });
     const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     c.setAttribute('r', radius(n));
@@ -455,16 +499,56 @@ function updateDetails() {
   details.innerHTML = `<div class="id">${esc(n.id)}</div><table><tr><td>kind</td><td>${esc(n.kind)}</td></tr><tr><td>links</td><td>${adjacent}</td></tr>${props}</table>`;
 }
 
-svg.addEventListener('pointerdown', e => { drag = { type: 'pan', x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }; });
+function updatePinch() {
+  if (pointers.size < 2) { pinch = null; return; }
+  const points = [...pointers.values()].slice(0, 2);
+  const cx = (points[0].x + points[1].x) / 2;
+  const cy = (points[0].y + points[1].y) / 2;
+  const distance = Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
+  if (!pinch) pinch = { cx, cy, distance, panX: pan.x, panY: pan.y, scale: pan.scale };
+}
+
+svg.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  svg.setPointerCapture?.(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size >= 2) {
+    drag = null;
+    updatePinch();
+  } else {
+    drag = { type: 'pan', pointerId: e.pointerId, x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+  }
+});
 window.addEventListener('pointermove', e => {
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size >= 2) {
+    if (!pinch) updatePinch();
+    const points = [...pointers.values()].slice(0, 2);
+    const cx = (points[0].x + points[1].x) / 2;
+    const cy = (points[0].y + points[1].y) / 2;
+    const distance = Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
+    const next = Math.max(0.25, Math.min(3, pinch.scale * distance / pinch.distance));
+    pan.x = cx - (pinch.cx - pinch.panX) * next / pinch.scale;
+    pan.y = cy - (pinch.cy - pinch.panY) * next / pinch.scale;
+    pan.scale = next;
+    return;
+  }
   if (!drag) return;
+  if (drag.pointerId !== undefined && e.pointerId !== drag.pointerId) return;
   if (drag.type === 'pan') { pan.x = drag.px + e.clientX - drag.x; pan.y = drag.py + e.clientY - drag.y; }
   else {
     const s = nodeState.get(drag.id);
     if (s) { s.x = (e.clientX - pan.x) / pan.scale; s.y = (e.clientY - pan.y) / pan.scale; s.vx = s.vy = 0; }
   }
 });
-window.addEventListener('pointerup', () => { drag = null; });
+function releasePointer(e) {
+  pointers.delete(e.pointerId);
+  svg.releasePointerCapture?.(e.pointerId);
+  if (drag?.pointerId === e.pointerId) drag = null;
+  updatePinch();
+}
+window.addEventListener('pointerup', releasePointer);
+window.addEventListener('pointercancel', releasePointer);
 svg.addEventListener('wheel', e => {
   e.preventDefault();
   const old = pan.scale;

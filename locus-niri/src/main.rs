@@ -59,7 +59,11 @@ async fn main() -> anyhow::Result<()> {
                 if args.trace {
                     eprintln!("locus-niri: event {event:?}");
                 }
+                let refresh_workspaces = should_refresh_workspaces(&event);
                 let _ = state.apply(event);
+                if refresh_workspaces {
+                    refresh_workspaces_state(&mut state).context("refresh Niri workspaces")?;
+                }
                 let next = state_to_niri_state(&state);
                 publish_state(&client, &previous, &next).await;
                 previous = next;
@@ -111,15 +115,8 @@ fn niri_event_stream() -> anyhow::Result<mpsc::Receiver<niri_ipc::Event>> {
 }
 
 fn initial_niri_state() -> anyhow::Result<EventStreamState> {
+    let workspaces = request_workspaces().context("request initial Niri workspaces")?;
     let mut socket = Socket::connect().context("connect to Niri IPC socket")?;
-    let workspaces = match socket
-        .send(Request::Workspaces)
-        .context("request Niri workspaces")?
-    {
-        Ok(Response::Workspaces(workspaces)) => workspaces,
-        Ok(response) => bail!("unexpected Niri workspaces response: {response:?}"),
-        Err(message) => bail!("Niri rejected workspaces request: {message}"),
-    };
     let windows = match socket
         .send(Request::Windows)
         .context("request Niri windows")?
@@ -135,7 +132,36 @@ fn initial_niri_state() -> anyhow::Result<EventStreamState> {
     Ok(state)
 }
 
+fn request_workspaces() -> anyhow::Result<Vec<niri_ipc::Workspace>> {
+    let mut socket = Socket::connect().context("connect to Niri IPC socket")?;
+    match socket
+        .send(Request::Workspaces)
+        .context("request Niri workspaces")?
+    {
+        Ok(Response::Workspaces(workspaces)) => Ok(workspaces),
+        Ok(response) => bail!("unexpected Niri workspaces response: {response:?}"),
+        Err(message) => bail!("Niri rejected workspaces request: {message}"),
+    }
+}
+
+fn refresh_workspaces_state(state: &mut EventStreamState) -> anyhow::Result<()> {
+    let workspaces = request_workspaces()?;
+    let _ = state.apply(Event::WorkspacesChanged { workspaces });
+    Ok(())
+}
+
+fn should_refresh_workspaces(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::WorkspacesChanged { .. }
+            | Event::WorkspaceActivated { .. }
+            | Event::WorkspaceActiveWindowChanged { .. }
+            | Event::WorkspaceUrgencyChanged { .. }
+    )
+}
+
 async fn publish_state(client: &Client<'_>, previous: &NiriState, next: &NiriState) {
+    publish_metadata(client, next).await;
     for (workspace, window) in previous
         .workspace_windows
         .difference(&next.workspace_windows)
@@ -160,7 +186,6 @@ async fn publish_state(client: &Client<'_>, previous: &NiriState, next: &NiriSta
     {
         add_workspace_output(client, workspace, output).await;
     }
-    publish_metadata(client, next).await;
     if previous.focused_window != next.focused_window {
         set_or_clear_context(
             client,
