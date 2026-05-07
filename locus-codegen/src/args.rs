@@ -19,6 +19,8 @@ pub struct Args {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
 pub enum Language {
+    #[value(alias = "bash")]
+    Shell,
     #[value(alias = "typescript")]
     Ts,
 }

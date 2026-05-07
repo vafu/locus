@@ -310,12 +310,15 @@ cargo run -p locus-codegen -- --schema schema.yaml
 cargo run -p locus-codegen -- --schema schema.yaml --language ts
 cargo run -p locus-codegen -- --schema schema.yaml --out /tmp/locus.generated.ts
 cargo run -p locus-codegen -- --schema schema.yaml --language ts --adapter rx --out /tmp/locus.generated.ts
+cargo run -p locus-codegen -- --schema schema.yaml --language shell --out /tmp/locus.generated.sh
 ```
 
 The generated file contains `NodeKind`, `Relation`, and `NamedPath` unions, a
 `locusSchema` constant, and a small `LocusDbusClient`. The optional `rx`
 adapter adds RxJS observables around shared Locus watches, including generated
 helpers such as `selectedWindow$()` and `selectedWindowProperty$('title')`.
+Shell output is a sourceable bash/zsh helper library backed by `locusctl`, with
+functions such as `locus_selected_window` and `locus_selected_project_path`.
 
 Install all Locus binaries from the workspace with:
 

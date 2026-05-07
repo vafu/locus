@@ -1,5 +1,6 @@
 mod args;
 mod producer;
+mod shell;
 mod typescript;
 
 use std::fs::File;
