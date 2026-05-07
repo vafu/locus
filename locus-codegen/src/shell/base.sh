@@ -29,4 +29,3 @@ locus_context_get() {
 locus_context_set() {
   "$LOCUSCTL" context set "$@"
 }
-
