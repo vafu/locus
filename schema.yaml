@@ -21,6 +21,7 @@ nodes:
       icon: {}
   agent-session:
     properties:
+      id: {}
       cwd: {}
       model: {}
   app-instance:
