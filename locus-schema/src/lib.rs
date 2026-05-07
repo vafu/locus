@@ -26,6 +26,13 @@ pub enum Cardinality {
     Many,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Retention {
+    #[default]
+    Strong,
+    Weak,
+}
+
 /// A schema selector for the source or target node of a relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeSelector {
@@ -51,6 +58,8 @@ pub struct RelationSpec {
     pub sources_per_target: Cardinality,
     /// How many targets may be attached to a single source.
     pub targets_per_source: Cardinality,
+    /// Whether the target may outlive the source independently.
+    pub retention: Retention,
 }
 
 /// Parsed graph schema.
@@ -195,6 +204,12 @@ pub enum SchemaError {
         cardinality: String,
     },
     #[error(
+        "relation {relation:?} cannot use weak retention because multiple sources may share one target"
+    )]
+    UnsafeWeakRetention { relation: String },
+    #[error("invalid relation retention {relation:?}: {retention:?}")]
+    InvalidRetention { relation: String, retention: String },
+    #[error(
         "{role} {subject:?} does not match relation {relation:?}: expected exact subject {expected:?}"
     )]
     ExactMismatch {
@@ -266,6 +281,8 @@ struct RawRelation {
     #[serde(default)]
     to: RawNodeSelector,
     cardinality: String,
+    #[serde(default)]
+    retention: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -301,6 +318,10 @@ impl TryFrom<RawSchema> for GraphSchema {
         for (name, raw_relation) in raw.relations {
             let (sources_per_target, targets_per_source) =
                 parse_cardinality(&name, &raw_relation.cardinality)?;
+            let retention = parse_retention(&name, raw_relation.retention.as_deref())?;
+            if retention == Retention::Weak && sources_per_target == Cardinality::Many {
+                return Err(SchemaError::UnsafeWeakRetention { relation: name });
+            }
             relations.insert(
                 name.clone(),
                 RelationSpec {
@@ -309,6 +330,7 @@ impl TryFrom<RawSchema> for GraphSchema {
                     target: raw_relation.to.into(),
                     sources_per_target,
                     targets_per_source,
+                    retention,
                 },
             );
         }
@@ -383,6 +405,17 @@ fn parse_cardinality(
         other => Err(SchemaError::InvalidCardinality {
             relation: relation.to_string(),
             cardinality: other.to_string(),
+        }),
+    }
+}
+
+fn parse_retention(relation: &str, retention: Option<&str>) -> Result<Retention, SchemaError> {
+    match retention.unwrap_or("strong") {
+        "strong" => Ok(Retention::Strong),
+        "weak" => Ok(Retention::Weak),
+        other => Err(SchemaError::InvalidRetention {
+            relation: relation.to_string(),
+            retention: other.to_string(),
         }),
     }
 }
@@ -484,6 +517,7 @@ relations:
     from: workspace
     to: project
     cardinality: one-to-one
+    retention: weak
 
 paths:
   selected-project:
@@ -502,6 +536,10 @@ paths:
         assert_eq!(
             schema.relation("project").unwrap().source,
             NodeSelector::Kind("workspace".to_string())
+        );
+        assert_eq!(
+            schema.relation("project").unwrap().retention,
+            Retention::Weak
         );
         assert_eq!(
             schema.path("selected-project").unwrap().path,
@@ -524,5 +562,39 @@ relations:
         .unwrap_err();
 
         assert!(matches!(error, SchemaError::InvalidCardinality { .. }));
+    }
+
+    #[test]
+    fn rejects_weak_retention_when_target_can_be_shared() {
+        let error = GraphSchema::parse_yaml(
+            r#"
+relations:
+  project:
+    from: workspace
+    to: project
+    cardinality: many-to-one
+    retention: weak
+"#,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, SchemaError::UnsafeWeakRetention { .. }));
+    }
+
+    #[test]
+    fn rejects_invalid_retention() {
+        let error = GraphSchema::parse_yaml(
+            r#"
+relations:
+  project:
+    from: workspace
+    to: project
+    cardinality: one-to-one
+    retention: sticky
+"#,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, SchemaError::InvalidRetention { .. }));
     }
 }

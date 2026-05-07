@@ -4,7 +4,6 @@ use niri_ipc::state::EventStreamState;
 
 pub const WORKSPACE_RELATION: &str = "workspace";
 pub const WINDOW_RELATION: &str = "window";
-pub const SELECTED_WORKSPACE_RELATION: &str = "selected-workspace";
 pub const OUTPUT_RELATION: &str = "output";
 pub const SELECTED_CONTEXT: &str = "selected";
 
@@ -41,7 +40,6 @@ pub struct ProjectedGraph {
     pub workspace_outputs: BTreeSet<(String, String)>,
     pub properties: BTreeMap<(String, String), String>,
     pub focused_window: Option<String>,
-    pub focused_workspace: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +57,9 @@ pub enum GraphMutation {
     RemoveLinks {
         source: String,
         relation: String,
+    },
+    DeleteNode {
+        subject: String,
     },
     SetProperty {
         subject: String,
@@ -214,7 +215,6 @@ pub fn state_to_graph(state: &EventStreamState) -> ProjectedGraph {
                 .and_then(|workspace| workspace.active_window_id)
                 .map(window_subject)
         });
-    let focused_workspace = focused_workspace.map(|workspace| workspace_subject(workspace.id));
     if let Some(window) = focused_window.as_deref() {
         insert_property(&mut properties, window, "kind", "window");
         insert_property(&mut properties, window, "source", "niri");
@@ -228,13 +228,16 @@ pub fn state_to_graph(state: &EventStreamState) -> ProjectedGraph {
         workspace_outputs,
         properties,
         focused_window,
-        focused_workspace,
     }
 }
 
 pub fn diff_graphs(previous: &ProjectedGraph, next: &ProjectedGraph) -> Vec<GraphMutation> {
     let mut mutations = Vec::new();
+    let deleted_windows = deleted_subjects(previous, next, "window");
     for (subject, key) in previous.properties.keys() {
+        if deleted_windows.contains(subject) {
+            continue;
+        }
         if !next
             .properties
             .contains_key(&(subject.clone(), key.clone()))
@@ -258,10 +261,18 @@ pub fn diff_graphs(previous: &ProjectedGraph, next: &ProjectedGraph) -> Vec<Grap
         .workspace_windows
         .difference(&next.workspace_windows)
     {
+        if deleted_windows.contains(window) {
+            continue;
+        }
         mutations.push(GraphMutation::RemoveLink {
             source: window.clone(),
             relation: WORKSPACE_RELATION.to_string(),
             target: workspace.clone(),
+        });
+    }
+    for window in &deleted_windows {
+        mutations.push(GraphMutation::DeleteNode {
+            subject: window.clone(),
         });
     }
     for (workspace, window) in next
@@ -302,15 +313,25 @@ pub fn diff_graphs(previous: &ProjectedGraph, next: &ProjectedGraph) -> Vec<Grap
             next.focused_window.clone(),
         );
     }
-    if previous.focused_workspace != next.focused_workspace {
-        push_context_mutation(
-            &mut mutations,
-            SELECTED_CONTEXT,
-            SELECTED_WORKSPACE_RELATION,
-            next.focused_workspace.clone(),
-        );
-    }
     mutations
+}
+
+fn deleted_subjects(
+    previous: &ProjectedGraph,
+    next: &ProjectedGraph,
+    kind: &str,
+) -> BTreeSet<String> {
+    previous
+        .properties
+        .iter()
+        .filter(|((_, key), value)| key == "kind" && value.as_str() == kind)
+        .map(|((subject, _), _)| subject.clone())
+        .filter(|subject| {
+            !next
+                .properties
+                .contains_key(&(subject.clone(), "kind".to_string()))
+        })
+        .collect()
 }
 
 pub fn push_context_mutation(
@@ -399,6 +420,29 @@ mod tests {
             vec![GraphMutation::RemoveProperty {
                 subject: "window:1".to_string(),
                 key: "title".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn diff_deletes_window_node_when_window_disappears() {
+        let mut previous = ProjectedGraph::default();
+        previous
+            .workspace_windows
+            .insert(("workspace:1".to_string(), "window:1".to_string()));
+        previous.properties.insert(
+            ("window:1".to_string(), "kind".to_string()),
+            "window".to_string(),
+        );
+        previous.properties.insert(
+            ("window:1".to_string(), "title".to_string()),
+            "gone".to_string(),
+        );
+
+        assert_eq!(
+            diff_graphs(&previous, &ProjectedGraph::default()),
+            vec![GraphMutation::DeleteNode {
+                subject: "window:1".to_string(),
             }]
         );
     }

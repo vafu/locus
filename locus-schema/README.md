@@ -59,7 +59,7 @@ schema-validated relation.
 
 ## Relations
 
-Relations declare `from`, `to`, and `cardinality`.
+Relations declare `from`, `to`, `cardinality`, and optional retention metadata.
 
 `from` and `to` can be:
 
@@ -99,11 +99,16 @@ Cardinality controls how `SetLink` behaves in `locus-core`. For example, a
 `many-to-one` relation means many sources may point to the same target, but one
 source may point to only one target for that relation.
 
+`retention: weak` means targets reached through this outgoing relation should
+not outlive the source. When `DeleteNode(source)` is called, weakly retained
+targets are deleted too. The default is `retention: strong`. Weak retention is
+rejected for relations where multiple sources may share one target.
+
 ## Paths
 
-Paths are named read-side traversals. They do not validate writes. They exist so
-clients and code generators can share common graph queries without duplicating
-string arrays:
+Paths are named directed read-side traversals. They do not validate writes. They
+exist so clients and code generators can share common graph queries without
+duplicating string arrays:
 
 ```yaml
 selected-project:

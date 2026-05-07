@@ -6,9 +6,8 @@ use niri_ipc::state::{EventStreamState, EventStreamStatePart};
 use tracing::trace;
 
 use crate::graph::{
-    GraphMutation, ProjectedGraph, SELECTED_CONTEXT, SELECTED_WORKSPACE_RELATION,
-    WINDOW_PROPERTY_KEYS, WINDOW_RELATION, WORKSPACE_RELATION, diff_graphs, push_context_mutation,
-    state_to_graph, window_subject, workspace_subject,
+    GraphMutation, ProjectedGraph, SELECTED_CONTEXT, WINDOW_RELATION, WORKSPACE_RELATION,
+    diff_graphs, push_context_mutation, state_to_graph, window_subject, workspace_subject,
 };
 
 #[derive(Debug, Default)]
@@ -69,7 +68,6 @@ impl GraphProjection {
                 );
             }
             Event::WorkspaceActivated { .. } => {
-                self.project_workspace_selection(mutations);
                 self.project_workspace_activity(mutations);
             }
             Event::WorkspaceActiveWindowChanged {
@@ -119,22 +117,6 @@ impl GraphProjection {
             | Event::ConfigLoaded { .. }
             | Event::ScreenshotCaptured { .. } => {}
         }
-    }
-
-    fn project_workspace_selection(&mut self, mutations: &mut Vec<GraphMutation>) {
-        let focused_workspace = self
-            .niri
-            .workspaces
-            .workspaces
-            .values()
-            .find(|workspace| workspace.is_focused)
-            .map(|workspace| workspace_subject(workspace.id));
-        self.set_context(
-            mutations,
-            SELECTED_CONTEXT,
-            SELECTED_WORKSPACE_RELATION,
-            focused_workspace,
-        );
     }
 
     fn project_workspace_activity(&mut self, mutations: &mut Vec<GraphMutation>) {
@@ -276,19 +258,15 @@ impl GraphProjection {
             .cloned()
             .collect::<Vec<_>>();
         for (workspace, window) in links {
-            mutations.push(GraphMutation::RemoveLink {
-                source: window.clone(),
-                relation: WORKSPACE_RELATION.to_string(),
-                target: workspace.clone(),
-            });
             self.graph.workspace_windows.remove(&(workspace, window));
         }
         if self.graph.focused_window.as_deref() == Some(subject.as_str()) {
             self.set_selected_window(mutations, None);
         }
-        for key in WINDOW_PROPERTY_KEYS {
-            self.remove_property(mutations, subject.clone(), key);
-        }
+        self.graph
+            .properties
+            .retain(|(property_subject, _), _| property_subject != &subject);
+        mutations.push(GraphMutation::DeleteNode { subject });
     }
 
     fn set_selected_window(
@@ -330,7 +308,6 @@ impl GraphProjection {
     ) {
         let stored = match relation {
             WINDOW_RELATION => &mut self.graph.focused_window,
-            SELECTED_WORKSPACE_RELATION => &mut self.graph.focused_workspace,
             _ => return,
         };
         if *stored == target {

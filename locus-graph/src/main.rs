@@ -1,9 +1,11 @@
 use std::collections::{BTreeSet, HashMap};
 use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 use locus_dbus::{Client, LinkTuple};
+use locus_schema::{Cardinality, GraphSchema, NodeSelector, Retention};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -85,8 +87,32 @@ async fn graph_json(connection: &zbus::Connection) -> anyhow::Result<String> {
         .collect::<Vec<_>>()
         .join(",");
     let links = links.iter().map(link_json).collect::<Vec<_>>().join(",");
+    let relations = load_schema()
+        .map(|schema| {
+            schema
+                .relations()
+                .iter()
+                .map(|(name, relation)| {
+                    format!(
+                        "{{\"name\":{},\"from\":{},\"to\":{},\"cardinality\":{},\"retention\":{}}}",
+                        json_string(name),
+                        selector_json(&relation.source),
+                        selector_json(&relation.target),
+                        json_string(cardinality_name(
+                            relation.sources_per_target,
+                            relation.targets_per_source,
+                        )),
+                        json_string(retention_name(relation.retention)),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
 
-    Ok(format!("{{\"nodes\":[{nodes}],\"links\":[{links}]}}"))
+    Ok(format!(
+        "{{\"nodes\":[{nodes}],\"links\":[{links}],\"relations\":[{relations}]}}"
+    ))
 }
 
 fn node_json(subject: &str, properties: &HashMap<String, String>) -> String {
@@ -120,6 +146,45 @@ fn link_json((source, relation, target): &LinkTuple) -> String {
         json_string(relation),
         json_string(target)
     )
+}
+
+fn load_schema() -> Option<GraphSchema> {
+    GraphSchema::load(default_schema_path()).ok()
+}
+
+fn default_schema_path() -> PathBuf {
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(config_home).join("locus/schema.yaml");
+    }
+    let home = std::env::var_os("HOME").unwrap_or_else(|| ".".into());
+    PathBuf::from(home).join(".config/locus/schema.yaml")
+}
+
+fn selector_json(selector: &NodeSelector) -> String {
+    match selector {
+        NodeSelector::Any => "{\"type\":\"any\"}".to_string(),
+        NodeSelector::Kind(kind) => format!("{{\"type\":\"kind\",\"kind\":{}}}", json_string(kind)),
+        NodeSelector::Exact(id) => format!("{{\"type\":\"exact\",\"id\":{}}}", json_string(id)),
+    }
+}
+
+fn cardinality_name(
+    sources_per_target: Cardinality,
+    targets_per_source: Cardinality,
+) -> &'static str {
+    match (sources_per_target, targets_per_source) {
+        (Cardinality::One, Cardinality::One) => "1:1",
+        (Cardinality::Many, Cardinality::One) => "*:1",
+        (Cardinality::One, Cardinality::Many) => "1:*",
+        (Cardinality::Many, Cardinality::Many) => "*:*",
+    }
+}
+
+fn retention_name(retention: Retention) -> &'static str {
+    match retention {
+        Retention::Strong => "strong",
+        Retention::Weak => "weak",
+    }
 }
 
 fn short_label(subject: &str) -> &str {
@@ -174,7 +239,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Locus Graph</title>
   <style>
-    :root { color-scheme: dark; --bg: #111318; --panel: #181b22; --fg: #e8e9ef; --dim: #9da3b4; --line: #4e566b; --accent: #e8ac38; --green: #68c48c; --red: #df6b6b; }
+    :root { color-scheme: dark; --bg: #111318; --panel: #181b22; --fg: #e8e9ef; --dim: #9da3b4; --line: #5b6478; --accent: #e8ac38; --green: #68c48c; --red: #df6b6b; }
     * { box-sizing: border-box; }
     body { margin: 0; height: 100vh; overflow: hidden; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, sans-serif; }
     #app { display: grid; grid-template-columns: minmax(0, 1fr) 360px; height: 100vh; }
@@ -187,6 +252,11 @@ const INDEX_HTML: &str = r##"<!doctype html>
     header { padding: 14px 16px; border-bottom: 1px solid #2a2f3b; }
     h1 { margin: 0; font-size: 15px; }
     #stats { margin-top: 4px; color: var(--dim); }
+    #legend { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 10px; color: var(--dim); font-size: 12px; }
+    .legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid currentColor; background: var(--kind-fill, #252b36); color: var(--kind-stroke, #f0c15c); }
+    .legend-line { width: 18px; height: 0; border-top: 2px solid var(--line); }
+    .legend-line.weak { border-top-style: dashed; border-color: var(--accent); }
     #details { padding: 12px 16px; border-bottom: 1px solid #2a2f3b; min-height: 132px; }
     #details .id { overflow-wrap: anywhere; color: var(--accent); font-weight: 700; }
     #details table { margin-top: 8px; width: 100%; border-collapse: collapse; }
@@ -205,12 +275,10 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .event.set { border-color: var(--accent); }
     .event .kind { font-weight: 700; }
     .event .link { color: var(--dim); overflow-wrap: anywhere; }
-    .link-line { stroke: var(--line); stroke-width: 1.4; marker-end: url(#arrow); }
+    .link-line { stroke: var(--line); stroke-width: 1.6; marker-end: url(#arrow); }
+    .link-line.weak { stroke: var(--accent); stroke-dasharray: 5 4; marker-end: url(#arrow-weak); }
     .link-label { fill: var(--dim); font-size: 12px; pointer-events: none; }
-    .node circle { stroke: #f0c15c; stroke-width: 1.5; fill: #252b36; }
-    .node.project circle { fill: #21352b; stroke: #77d49a; }
-    .node.context circle { fill: #332f1f; stroke: #e8c15a; }
-    .node.agent-session circle { fill: #2f2638; stroke: #cb91f2; }
+    .node circle { stroke: var(--kind-stroke, #f0c15c); stroke-width: 1.5; fill: var(--kind-fill, #252b36); }
     .node text { fill: var(--fg); font-size: 13px; pointer-events: none; text-anchor: middle; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
     .node.selected circle { stroke-width: 3; }
     @media (max-width: 760px) {
@@ -238,11 +306,14 @@ const INDEX_HTML: &str = r##"<!doctype html>
       <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
         <path d="M 0 0 L 10 5 L 0 10 z" fill="#4e566b"></path>
       </marker>
+      <marker id="arrow-weak" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#e8ac38"></path>
+      </marker>
     </defs>
     <g id="viewport"><g id="links"></g><g id="labels"></g><g id="nodes"></g></g>
   </svg>
   <aside>
-    <header><h1>Locus Graph</h1><div id="stats">connecting...</div></header>
+    <header><h1>Locus Graph</h1><div id="stats">connecting...</div><div id="legend"></div></header>
     <section id="details"><div class="id">Select a node</div></section>
     <section id="controls"></section>
     <section id="log"></section>
@@ -258,8 +329,9 @@ const stats = document.getElementById('stats');
 const details = document.getElementById('details');
 const controls = document.getElementById('controls');
 const log = document.getElementById('log');
+const legend = document.getElementById('legend');
 const panelToggle = document.getElementById('panel-toggle');
-let graph = { nodes: [], links: [] };
+let graph = { nodes: [], links: [], relations: [] };
 let nodeState = new Map();
 let previousLinks = new Set();
 let selected = '';
@@ -281,8 +353,38 @@ let panelHidden = JSON.parse(localStorage.getItem('locusGraphPanelHidden') || (w
 
 function key(l) { return `${l.source}\t${l.relation}\t${l.target}`; }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function kind(id) { return id.includes(':') ? id.split(':')[0] : 'node'; }
+function classNamePart(s) { return String(s || 'node').replace(/[^A-Za-z0-9_-]/g, '_'); }
 function radius(n) { return Math.max(22, Math.min(44, 13 + n.label.length * 2.2)); }
+const kindColors = {
+  context: ['#332f1f', '#e8c15a'],
+  window: ['#223349', '#78aeea'],
+  workspace: ['#243724', '#79d083'],
+  output: ['#3a2b22', '#e99d62'],
+  project: ['#24343a', '#66c7d9'],
+  'app-instance': ['#342832', '#ee8fc5'],
+  'agent-session': ['#2f2638', '#cb91f2'],
+};
+const fallbackColors = [
+  ['#252b36', '#f0c15c'],
+  ['#2a3530', '#9bd58f'],
+  ['#352c3b', '#bd9cff'],
+  ['#23363b', '#6fd3c6'],
+  ['#3b2d2d', '#ef8b8b'],
+];
+function colorsForKind(kind) {
+  if (kindColors[kind]) return kindColors[kind];
+  let hash = 0;
+  for (const ch of String(kind)) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return fallbackColors[hash % fallbackColors.length];
+}
+function relationSpec(name) {
+  return (graph.relations || []).find(r => r.name === name) || {};
+}
+function applyKindColors(el, kind) {
+  const [fill, stroke] = colorsForKind(kind);
+  el.style.setProperty('--kind-fill', fill);
+  el.style.setProperty('--kind-stroke', stroke);
+}
 
 function updatePanelVisibility() {
   document.body.classList.toggle('panel-hidden', panelHidden);
@@ -346,10 +448,22 @@ async function refresh() {
     graph = next;
     seedNodes();
     stats.textContent = `${graph.nodes.length} nodes · ${graph.links.length} links`;
+    updateLegend();
     updateDetails();
   } catch (e) {
     stats.textContent = `error: ${e}`;
   }
+}
+
+function updateLegend() {
+  const kinds = [...new Set(graph.nodes.map(n => n.kind || 'node'))].sort();
+  const nodeItems = kinds.map(kind => {
+    const [fill, stroke] = colorsForKind(kind);
+    return `<span class="legend-item"><span class="legend-dot" style="--kind-fill:${fill};--kind-stroke:${stroke}"></span>${esc(kind)}</span>`;
+  }).join('');
+  legend.innerHTML = nodeItems
+    + '<span class="legend-item"><span class="legend-line"></span>source -> target</span>'
+    + '<span class="legend-item"><span class="legend-line weak"></span>weak retention</span>';
 }
 
 function diffLog(links) {
@@ -454,21 +568,28 @@ function draw() {
   for (const l of graph.links) {
     const a = nodeState.get(l.source), b = nodeState.get(l.target);
     if (!a || !b) continue;
+    const sourceNode = nodeById.get(l.source);
+    const targetNode = nodeById.get(l.target);
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.max(1, Math.hypot(dx, dy));
+    const sourceRadius = sourceNode ? radius(sourceNode) + 2 : 24;
+    const targetRadius = targetNode ? radius(targetNode) + 8 : 30;
+    const spec = relationSpec(l.relation);
     const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('class', 'link-line');
-    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
-    line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+    line.setAttribute('class', `link-line ${spec.retention === 'weak' ? 'weak' : ''}`);
+    line.setAttribute('x1', a.x + dx / d * sourceRadius); line.setAttribute('y1', a.y + dy / d * sourceRadius);
+    line.setAttribute('x2', b.x - dx / d * targetRadius); line.setAttribute('y2', b.y - dy / d * targetRadius);
     linksG.append(line);
     const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     text.setAttribute('class', 'link-label');
     text.setAttribute('x', (a.x + b.x) / 2); text.setAttribute('y', (a.y + b.y) / 2 - 4);
-    text.textContent = l.relation;
+    text.textContent = spec.cardinality ? `${l.relation} ${spec.cardinality}` : l.relation;
     labelsG.append(text);
   }
   for (const n of graph.nodes) {
     const s = nodeState.get(n.id); if (!s) continue;
     const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    g.setAttribute('class', `node ${kind(n.id)} ${selected === n.id ? 'selected' : ''}`);
+    g.setAttribute('class', `node kind-${classNamePart(n.kind)} ${selected === n.id ? 'selected' : ''}`);
+    applyKindColors(g, n.kind || 'node');
     g.setAttribute('transform', `translate(${s.x},${s.y})`);
     g.addEventListener('pointerdown', e => {
       e.preventDefault();

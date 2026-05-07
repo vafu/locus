@@ -4,14 +4,12 @@ use crate::error::ServiceError;
 use crate::state::RuntimeState;
 use locus_api::Link;
 
-fn neighbors(links: &BTreeSet<Link>, subject: &str) -> Vec<String> {
+fn outgoing_neighbors(links: &BTreeSet<Link>, subject: &str) -> Vec<String> {
     links
         .iter()
         .filter_map(|link| {
             if link.source == subject {
                 Some(link.target.clone())
-            } else if link.target == subject {
-                Some(link.source.clone())
             } else {
                 None
             }
@@ -19,19 +17,12 @@ fn neighbors(links: &BTreeSet<Link>, subject: &str) -> Vec<String> {
         .collect()
 }
 
-fn related_by(links: &BTreeSet<Link>, subject: &str, relation: &str) -> Vec<String> {
+fn outgoing_related_by(links: &BTreeSet<Link>, subject: &str, relation: &str) -> Vec<String> {
     links
         .iter()
         .filter(|link| link.relation == relation)
-        .filter_map(|link| {
-            if link.source == subject {
-                Some(link.target.clone())
-            } else if link.target == subject {
-                Some(link.source.clone())
-            } else {
-                None
-            }
-        })
+        .filter(|link| link.source == subject)
+        .map(|link| link.target.clone())
         .collect()
 }
 
@@ -40,7 +31,7 @@ pub fn resolve_all(state: &RuntimeState, source: &str, path: &[String]) -> Vec<S
     for relation in path {
         let mut next = BTreeSet::new();
         for subject in &subjects {
-            next.extend(related_by(&state.links, subject, relation));
+            next.extend(outgoing_related_by(&state.links, subject, relation));
         }
         subjects = next;
         if subjects.is_empty() {
@@ -75,7 +66,7 @@ pub fn resolve_kind(state: &RuntimeState, source: &str, kind: &str) -> Option<St
     let mut visited = BTreeSet::from([source.to_string()]);
     let mut queue = VecDeque::from([source.to_string()]);
     while let Some(subject) = queue.pop_front() {
-        for neighbor in neighbors(&state.links, &subject) {
+        for neighbor in outgoing_neighbors(&state.links, &subject) {
             if !visited.insert(neighbor.clone()) {
                 continue;
             }

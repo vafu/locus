@@ -29,6 +29,16 @@ relations:
     from: workspace
     to: project
     cardinality: one-to-one
+  app-instance:
+    from: window
+    to: app-instance
+    cardinality: one-to-one
+    retention: weak
+  agent-session:
+    from: app-instance
+    to: agent-session
+    cardinality: one-to-one
+    retention: weak
 "#,
         )
         .unwrap(),
@@ -105,7 +115,7 @@ fn finds_subjects_by_property() {
 }
 
 #[test]
-fn resolves_shortest_path_to_kind() {
+fn resolves_shortest_outgoing_path_to_kind() {
     let service = service();
     service
         .set_property("project:a", "kind", "project")
@@ -132,6 +142,45 @@ fn resolves_shortest_path_to_kind() {
         service.resolve_kind("context:selected", "project").unwrap(),
         Some("project:b".to_string())
     );
+}
+
+#[test]
+fn resolve_paths_follow_relation_direction() {
+    let service = service();
+    set_kind(&service, "window:1", "window");
+    set_kind(&service, "workspace:1", "workspace");
+    service
+        .set_link("window:1", "workspace", "workspace:1")
+        .unwrap();
+
+    assert_eq!(
+        service
+            .resolve_path("window:1", &["workspace".to_string()])
+            .unwrap(),
+        Some("workspace:1".to_string())
+    );
+    assert_eq!(
+        service
+            .resolve_path("workspace:1", &["workspace".to_string()])
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn find_nearest_follows_outgoing_links_only() {
+    let service = service();
+    set_kind(&service, "window:1", "window");
+    set_kind(&service, "workspace:1", "workspace");
+    service
+        .set_link("window:1", "workspace", "workspace:1")
+        .unwrap();
+
+    assert_eq!(
+        service.resolve_kind("window:1", "workspace").unwrap(),
+        Some("workspace:1".to_string())
+    );
+    assert_eq!(service.resolve_kind("workspace:1", "window").unwrap(), None);
 }
 
 #[test]
@@ -311,4 +360,40 @@ fn all_links_returns_links() {
             ("b".to_string(), "rel".to_string(), "c".to_string()),
         ]
     );
+}
+
+#[test]
+fn delete_node_cascades_through_owned_outgoing_links() {
+    let service = service();
+    set_kind(&service, "window:1", "window");
+    set_kind(&service, "workspace:1", "workspace");
+    set_kind(&service, "app-instance:nvim", "app-instance");
+    set_kind(&service, "agent-session:nvim/1", "agent-session");
+    service
+        .set_link("window:1", "workspace", "workspace:1")
+        .unwrap();
+    service
+        .set_link("window:1", "app-instance", "app-instance:nvim")
+        .unwrap();
+    service
+        .set_link("app-instance:nvim", "agent-session", "agent-session:nvim/1")
+        .unwrap();
+
+    let change = service.delete_node("window:1").unwrap();
+    assert_eq!(change.removed_links.len(), 3);
+    assert_eq!(service.subjects().unwrap(), vec!["workspace:1".to_string()]);
+}
+
+#[test]
+fn delete_node_does_not_cascade_through_incoming_links() {
+    let service = service();
+    set_kind(&service, "window:1", "window");
+    set_kind(&service, "workspace:1", "workspace");
+    service
+        .set_link("window:1", "workspace", "workspace:1")
+        .unwrap();
+
+    service.delete_node("workspace:1").unwrap();
+
+    assert_eq!(service.subjects().unwrap(), vec!["window:1".to_string()]);
 }

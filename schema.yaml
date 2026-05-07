@@ -44,12 +44,6 @@ relations:
     to: workspace
     cardinality: many-to-one
 
-  selected-workspace:
-    from:
-      exact: context:selected
-    to: workspace
-    cardinality: many-to-one
-
   output:
     from: workspace
     to: output
@@ -64,11 +58,13 @@ relations:
     from: app-instance
     to: agent-session
     cardinality: one-to-one
+    retention: weak
 
   app-instance:
     from: window
     to: app-instance
     cardinality: one-to-one
+    retention: weak
 
 paths:
   selected-window:
@@ -77,15 +73,15 @@ paths:
 
   selected-workspace:
     from: context:selected
-    path: [selected-workspace]
+    path: [window, workspace]
 
   selected-output:
     from: context:selected
-    path: [selected-workspace, output]
+    path: [window, workspace, output]
 
   selected-project:
     from: context:selected
-    path: [selected-workspace, project]
+    path: [window, workspace, project]
 
   selected-agent-session:
     from: context:selected

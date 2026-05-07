@@ -26,7 +26,8 @@ Current desktop graph shape is declared in `schema.yaml`:
 context:selected --window--> window:<id>
 window:<id> --workspace--> workspace:<id>
 workspace:<id> --project--> project:<path>
-window:<id> --agent-session--> agent-session:<agent>/<session>
+window:<id> --app-instance--> app-instance:<app>/<instance>
+app-instance:<app>/<instance> --agent-session--> agent-session:<agent>/<session>
 ```
 
 Niri is treated as a publisher, not as part of the node identity:
@@ -153,6 +154,7 @@ Methods:
 SetLink(source: s, relation: s, target: s)
 RemoveLink(source: s, relation: s, target: s)
 RemoveLinks(source: s, relation: s)
+DeleteNode(subject: s)
 
 GetTargets(source: s, relation: s) -> as
 GetSources(target: s, relation: s) -> as
@@ -175,19 +177,20 @@ FindNearest(source: s, kind: s) -> s
 Empty strings represent optional `None` over D-Bus.
 
 `Resolve` follows an exact relation path, traversing matching relation edges in
-either direction, and returns one target. If the path resolves to multiple
-targets, it returns an error. Use `ResolveAll` for intentionally-many paths.
+the `source --relation--> target` direction, and returns one target. If the path
+resolves to multiple targets, it returns an error. Use `ResolveAll` for
+intentionally-many paths. Use `GetSources` when reverse lookup is intended.
 
 Examples:
 
 ```sh
 locusctl resolve context:selected window workspace project
-locusctl resolve context:selected window agent-session
-locusctl resolve-all workspace:6 workspace agent-session
+locusctl resolve context:selected window app-instance agent-session
+locusctl link sources workspace:6 workspace
 ```
 
-`FindNearest(source, kind)` is a fuzzy shortest-path/debug query. Application UI
-should prefer exact `Resolve` paths.
+`FindNearest(source, kind)` is a fuzzy shortest-path/debug query over outgoing
+edges. Application UI should prefer exact `Resolve` paths.
 
 `SubscribeResolve(source, path)` registers a derived query in `locusd` and
 returns the current resolved target. After future graph/property mutations,
@@ -271,17 +274,17 @@ It publishes generic Locus node IDs:
 
 ```text
 context:selected --window--> window:<focused-or-active-window>
-context:selected --selected-workspace--> workspace:<focused-workspace>
 window:<id> --workspace--> workspace:<id>
+window:<id> --app-instance--> app-instance:<app>/<instance>
 window:<id>[kind] = window
 workspace:<id>[kind] = workspace
 ```
 
-Project context is derived from the selected workspace:
+Selected workspace and project context are derived through the selected window:
 
 ```sh
-locusctl resolve context:selected selected-workspace
-locusctl resolve context:selected selected-workspace project
+locusctl resolve context:selected window workspace
+locusctl resolve context:selected window workspace project
 ```
 
 ### `locus-graph`
@@ -356,19 +359,15 @@ This keeps AGS independent from Niri IPC.
 
 ### agent-dbus / Codex
 
-`agent-hook` links the selected window to an agent session:
+`agent-hook` links the active app instance to an agent session:
 
 ```text
-window:<id> --agent-session--> agent-session:codex/<session>
+window:<id> --app-instance--> app-instance:codex/<instance>
+app-instance:codex/<instance> --agent-session--> agent-session:codex/<session>
 ```
 
-The Codex zsh wrapper reads:
-
-```sh
-locusctl context get selected window --first
-```
-
-and passes the numeric window id through `AGENT_DBUS_WINDOW_ID`.
+The Codex zsh wrapper creates the app-instance node, links it to the selected
+window, and passes it through `LOCUS_APP_INSTANCE`.
 
 ## Useful Debug Commands
 

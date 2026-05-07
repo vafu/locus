@@ -1,14 +1,15 @@
 use anyhow::Context;
 use locus_dbus::{
-    Client, ClientExt, MUTATION_REMOVE_LINK, MUTATION_REMOVE_LINKS, MUTATION_REMOVE_PROPERTY,
-    MUTATION_SET_LINK, MUTATION_SET_PROPERTY, MutationTuple,
+    Client, ClientExt, MUTATION_DELETE_NODE, MUTATION_REMOVE_LINK, MUTATION_REMOVE_LINKS,
+    MUTATION_REMOVE_PROPERTY, MUTATION_SET_LINK, MUTATION_SET_PROPERTY, MutationTuple,
 };
 
 use crate::graph::{
-    GraphMutation, OUTPUT_PROPERTY_KEYS, OUTPUT_RELATION, SELECTED_CONTEXT,
-    SELECTED_WORKSPACE_RELATION, WINDOW_PROPERTY_KEYS, WINDOW_RELATION, WORKSPACE_PROPERTY_KEYS,
-    WORKSPACE_RELATION, context_subject,
+    GraphMutation, OUTPUT_PROPERTY_KEYS, OUTPUT_RELATION, SELECTED_CONTEXT, WINDOW_PROPERTY_KEYS,
+    WINDOW_RELATION, WORKSPACE_PROPERTY_KEYS, WORKSPACE_RELATION, context_subject,
 };
+
+const STALE_SELECTED_WORKSPACE_RELATION: &str = "selected-workspace";
 
 pub async fn apply_mutations(
     client: &Client<'_>,
@@ -35,6 +36,9 @@ pub async fn apply_mutations(
             } => mutation_tuple(MUTATION_REMOVE_LINK, source, relation, target),
             GraphMutation::RemoveLinks { source, relation } => {
                 mutation_tuple(MUTATION_REMOVE_LINKS, source, relation, String::new())
+            }
+            GraphMutation::DeleteNode { subject } => {
+                mutation_tuple(MUTATION_DELETE_NODE, subject, String::new(), String::new())
             }
             GraphMutation::SetProperty {
                 subject,
@@ -67,8 +71,8 @@ pub async fn clear_existing_niri_edges(client: &Client<'_>) -> anyhow::Result<()
     for (source, relation, target) in links {
         let is_workspace_window =
             relation == WINDOW_RELATION && source == context_subject(SELECTED_CONTEXT);
-        let is_selected_workspace =
-            relation == SELECTED_WORKSPACE_RELATION && source == context_subject(SELECTED_CONTEXT);
+        let is_selected_workspace = relation == STALE_SELECTED_WORKSPACE_RELATION
+            && source == context_subject(SELECTED_CONTEXT);
         let is_window_workspace = relation == WORKSPACE_RELATION
             && (source.starts_with("window:") || source.starts_with("niri:window:"));
         let is_workspace_output = relation == OUTPUT_RELATION
@@ -98,7 +102,7 @@ pub async fn clear_existing_niri_edges(client: &Client<'_>) -> anyhow::Result<()
     client
         .remove_links(
             &context_subject(SELECTED_CONTEXT),
-            SELECTED_WORKSPACE_RELATION,
+            STALE_SELECTED_WORKSPACE_RELATION,
         )
         .await
         .context("remove stale selected-workspace links")?;

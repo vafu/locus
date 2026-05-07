@@ -67,6 +67,18 @@ pub enum PropertyChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteNodeChange {
+    pub removed_links: Vec<Link>,
+    pub removed_properties: Vec<(String, String)>,
+}
+
+impl DeleteNodeChange {
+    pub fn is_empty(&self) -> bool {
+        self.removed_links.is_empty() && self.removed_properties.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolution {
     pub source: String,
     pub path: Vec<String>,
@@ -79,6 +91,8 @@ pub trait Graph: Send + Sync {
     fn remove_link(&self, source: &str, relation: &str, target: &str) -> GraphResult<Link>;
 
     fn remove_links(&self, source: &str, relation: &str) -> GraphResult<Vec<Link>>;
+
+    fn delete_node(&self, subject: &str) -> GraphResult<DeleteNodeChange>;
 
     fn targets(&self, source: &str, relation: &str) -> GraphResult<Vec<String>>;
 

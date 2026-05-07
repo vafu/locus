@@ -18,6 +18,7 @@ pub const NONE_STRING: &str = "";
 pub const MUTATION_SET_LINK: &str = "set-link";
 pub const MUTATION_REMOVE_LINK: &str = "remove-link";
 pub const MUTATION_REMOVE_LINKS: &str = "remove-links";
+pub const MUTATION_DELETE_NODE: &str = "delete-node";
 pub const MUTATION_SET_PROPERTY: &str = "set-property";
 pub const MUTATION_REMOVE_PROPERTY: &str = "remove-property";
 
@@ -375,6 +376,27 @@ where
         Ok(())
     }
 
+    async fn delete_node(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        subject: &str,
+    ) -> zbus::fdo::Result<()> {
+        let span = tracing::trace_span!("dbus.delete_node", subject);
+        let _guard = span.enter();
+        let change = self.backend.delete_node(subject).map_err(to_fdo)?;
+        let changed = !change.is_empty();
+        emit_node_deleted::<B>(&emitter, change).await?;
+        if changed {
+            self.refresh_watches(emitter.connection()).await?;
+            emit_resolve_changes::<B>(
+                &emitter,
+                self.backend.refresh_resolutions().map_err(to_fdo)?,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn get_targets(&self, source: &str, relation: &str) -> zbus::fdo::Result<Vec<String>> {
         let span = tracing::trace_span!("dbus.get_targets", source, relation);
         let _guard = span.enter();
@@ -504,6 +526,11 @@ where
                             .await
                             .map_err(to_fdo_display)?;
                     }
+                }
+                MUTATION_DELETE_NODE => {
+                    let change = self.backend.delete_node(&first).map_err(to_fdo)?;
+                    changed |= !change.is_empty();
+                    emit_node_deleted::<B>(&emitter, change).await?;
                 }
                 MUTATION_SET_PROPERTY => {
                     let change = self
@@ -835,6 +862,26 @@ where
     GraphIface::<B>::link_added(emitter, added.source, added.relation, added.target)
         .await
         .map_err(to_fdo_display)?;
+    Ok(())
+}
+
+async fn emit_node_deleted<B>(
+    emitter: &SignalEmitter<'_>,
+    change: locus_api::DeleteNodeChange,
+) -> zbus::fdo::Result<()>
+where
+    B: Graph + 'static,
+{
+    for link in change.removed_links {
+        GraphIface::<B>::link_removed(emitter, link.source, link.relation, link.target)
+            .await
+            .map_err(to_fdo_display)?;
+    }
+    for (subject, key) in change.removed_properties {
+        GraphIface::<B>::property_removed(emitter, subject, key)
+            .await
+            .map_err(to_fdo_display)?;
+    }
     Ok(())
 }
 

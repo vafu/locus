@@ -6,5 +6,6 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 locus-dbus = { path = "../locus-dbus" }
+locus-schema = { path = "../locus-schema" }
 tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
 zbus = { version = "5.15.0", default-features = false, features = ["tokio"] }

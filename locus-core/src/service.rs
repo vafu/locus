@@ -4,8 +4,11 @@ use std::sync::{Arc, Mutex};
 use crate::error::ServiceError;
 use crate::resolve::{resolve_all, resolve_kind, resolve_one};
 use crate::state::RuntimeState;
-use locus_api::{Graph, GraphError, GraphResult, Link, LinkSetChange, PropertyChange, Resolution};
-use locus_schema::{Cardinality, GraphSchema, SchemaError};
+use locus_api::{
+    DeleteNodeChange, Graph, GraphError, GraphResult, Link, LinkSetChange, PropertyChange,
+    Resolution,
+};
+use locus_schema::{Cardinality, GraphSchema, Retention, SchemaError};
 use tracing::trace;
 
 #[derive(Debug)]
@@ -28,6 +31,10 @@ impl Graph for LocusService {
 
     fn remove_links(&self, source: &str, relation: &str) -> GraphResult<Vec<Link>> {
         self.remove_links(source, relation).map_err(to_graph_error)
+    }
+
+    fn delete_node(&self, subject: &str) -> GraphResult<DeleteNodeChange> {
+        self.delete_node(subject).map_err(to_graph_error)
     }
 
     fn targets(&self, source: &str, relation: &str) -> GraphResult<Vec<String>> {
@@ -141,6 +148,55 @@ impl LocusService {
             .links
             .retain(|link| !(link.source == source && link.relation == relation));
         Ok(removed)
+    }
+
+    pub fn delete_node(&self, subject: &str) -> Result<DeleteNodeChange, ServiceError> {
+        let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        let mut deleted = BTreeSet::new();
+        let mut stack = vec![subject.to_string()];
+
+        while let Some(current) = stack.pop() {
+            if !deleted.insert(current.clone()) {
+                continue;
+            }
+
+            for link in inner.state.links() {
+                let Some(spec) = inner.schema.relation(&link.relation) else {
+                    continue;
+                };
+                if spec.retention == Retention::Weak && link.source == current {
+                    stack.push(link.target);
+                }
+            }
+        }
+
+        let removed_links = inner
+            .state
+            .links()
+            .into_iter()
+            .filter(|link| deleted.contains(&link.source) || deleted.contains(&link.target))
+            .collect::<Vec<_>>();
+        let removed_link_set = removed_links.iter().cloned().collect::<BTreeSet<_>>();
+        inner
+            .state
+            .links
+            .retain(|link| !removed_link_set.contains(link));
+
+        let removed_properties = inner
+            .state
+            .properties
+            .keys()
+            .filter(|(property_subject, _)| deleted.contains(property_subject))
+            .cloned()
+            .collect::<Vec<_>>();
+        for property in &removed_properties {
+            inner.state.properties.remove(property);
+        }
+
+        Ok(DeleteNodeChange {
+            removed_links,
+            removed_properties,
+        })
     }
 
     pub fn targets(&self, source: &str, relation: &str) -> Result<Vec<String>, ServiceError> {
