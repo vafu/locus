@@ -385,6 +385,50 @@ fn delete_node_cascades_through_owned_outgoing_links() {
 }
 
 #[test]
+fn remove_weak_link_deletes_orphaned_target() {
+    let service = service();
+    set_kind(&service, "window:1", "window");
+    set_kind(&service, "app-instance:nvim", "app-instance");
+    set_kind(&service, "agent-session:nvim/1", "agent-session");
+    service
+        .set_link("window:1", "app-instance", "app-instance:nvim")
+        .unwrap();
+    service
+        .set_link("app-instance:nvim", "agent-session", "agent-session:nvim/1")
+        .unwrap();
+
+    let change = service
+        .remove_link("window:1", "app-instance", "app-instance:nvim")
+        .unwrap();
+
+    assert_eq!(change.removed_links.len(), 2);
+    assert_eq!(service.subjects().unwrap(), vec!["window:1".to_string()]);
+}
+
+#[test]
+fn replacing_weak_link_deletes_previous_target() {
+    let service = service();
+    set_kind(&service, "window:1", "window");
+    set_kind(&service, "app-instance:old", "app-instance");
+    set_kind(&service, "app-instance:new", "app-instance");
+    service
+        .set_link("window:1", "app-instance", "app-instance:old")
+        .unwrap();
+
+    service
+        .set_link("window:1", "app-instance", "app-instance:new")
+        .unwrap();
+
+    assert_eq!(
+        service.subjects().unwrap(),
+        vec![
+            "app-instance:new".to_string(),
+            "window:1".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn delete_node_does_not_cascade_through_incoming_links() {
     let service = service();
     set_kind(&service, "window:1", "window");

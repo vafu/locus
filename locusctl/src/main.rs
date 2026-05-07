@@ -31,6 +31,7 @@ enum Command {
         #[command(subcommand)]
         command: ContextCommand,
     },
+    DeleteNode(DeleteNodeArgs),
     Resolve(ResolveArgs),
     ResolveAll(ResolveArgs),
     FindNearest(FindNearestArgs),
@@ -131,6 +132,11 @@ struct ContextGet {
     relation: String,
     #[arg(long)]
     first: bool,
+}
+
+#[derive(Debug, ClapArgs)]
+struct DeleteNodeArgs {
+    subject: String,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -345,6 +351,9 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         },
+        Command::DeleteNode(args) => {
+            write.delete_node(&args.subject).await?;
+        }
         Command::Resolve(args) => {
             if let Some(subject) = none(resolve.resolve(&args.source, args.path).await?) {
                 println!("{subject}");

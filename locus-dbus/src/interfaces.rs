@@ -44,11 +44,16 @@ impl GraphWriteIface {
         target: &str,
     ) -> zbus::fdo::Result<bool> {
         let change = self.state.set_link(source, relation, target)?;
-        let LinkSetChange::Changed { removed, added } = change else {
+        let LinkSetChange::Changed {
+            removed,
+            deleted,
+            added,
+        } = change
+        else {
             return Ok(false);
         };
         debug!(removed = removed.len(), "link changed");
-        emit_link_replacement(emitter, removed, added, true).await?;
+        emit_link_replacement(emitter, removed, deleted, added, true).await?;
         Ok(true)
     }
 
@@ -59,11 +64,10 @@ impl GraphWriteIface {
         relation: &str,
         target: &str,
     ) -> zbus::fdo::Result<bool> {
-        let link = self.state.remove_link(source, relation, target)?;
-        Self::link_removed(emitter, link.source, link.relation, link.target)
-            .await
-            .map_err(to_fdo_display)?;
-        Ok(true)
+        let change = self.state.remove_link(source, relation, target)?;
+        let changed = !change.is_empty();
+        emit_node_deleted(emitter, change).await?;
+        Ok(changed)
     }
 
     async fn remove_links_changed(
@@ -72,13 +76,9 @@ impl GraphWriteIface {
         source: &str,
         relation: &str,
     ) -> zbus::fdo::Result<bool> {
-        let links = self.state.remove_links(source, relation)?;
-        let changed = !links.is_empty();
-        for link in links {
-            Self::link_removed(emitter, link.source, link.relation, link.target)
-                .await
-                .map_err(to_fdo_display)?;
-        }
+        let change = self.state.remove_links(source, relation)?;
+        let changed = !change.is_empty();
+        emit_node_deleted(emitter, change).await?;
         Ok(changed)
     }
 
@@ -450,6 +450,7 @@ impl GraphResolveIface {
 async fn emit_link_replacement(
     emitter: &SignalEmitter<'_>,
     removed: Vec<Link>,
+    deleted: DeleteNodeChange,
     added: Link,
     emit_set: bool,
 ) -> zbus::fdo::Result<()> {
@@ -469,11 +470,7 @@ async fn emit_link_replacement(
         .map_err(to_fdo_display)?;
     }
 
-    for link in removed {
-        GraphWriteIface::link_removed(emitter, link.source, link.relation, link.target)
-            .await
-            .map_err(to_fdo_display)?;
-    }
+    emit_node_deleted(emitter, deleted).await?;
     GraphWriteIface::link_added(emitter, added.source, added.relation, added.target)
         .await
         .map_err(to_fdo_display)?;

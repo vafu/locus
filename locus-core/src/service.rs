@@ -36,14 +36,24 @@ impl LocusService {
         source: &str,
         relation: &str,
         target: &str,
-    ) -> Result<Link, ServiceError> {
+    ) -> Result<DeleteNodeChange, ServiceError> {
         let link = Link::new(source, relation, target);
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
         inner.state.links.remove(&link);
-        Ok(link)
+        let mut change = DeleteNodeChange {
+            removed_links: vec![link.clone()],
+            removed_properties: Vec::new(),
+        };
+        let roots = inner.orphaned_weak_targets(&[link]);
+        change.extend(inner.delete_nodes(roots));
+        Ok(change)
     }
 
-    pub fn remove_links(&self, source: &str, relation: &str) -> Result<Vec<Link>, ServiceError> {
+    pub fn remove_links(
+        &self,
+        source: &str,
+        relation: &str,
+    ) -> Result<DeleteNodeChange, ServiceError> {
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
         let removed = inner
             .state
@@ -55,21 +65,50 @@ impl LocusService {
             .state
             .links
             .retain(|link| !(link.source == source && link.relation == relation));
-        Ok(removed)
+        let mut change = DeleteNodeChange {
+            removed_links: removed.clone(),
+            removed_properties: Vec::new(),
+        };
+        let roots = inner.orphaned_weak_targets(&removed);
+        change.extend(inner.delete_nodes(roots));
+        Ok(change)
     }
 
     pub fn delete_node(&self, subject: &str) -> Result<DeleteNodeChange, ServiceError> {
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
+        Ok(inner.delete_nodes([subject.to_string()]))
+    }
+}
+
+impl Inner {
+    fn orphaned_weak_targets(&self, removed: &[Link]) -> Vec<String> {
+        removed
+            .iter()
+            .filter(|link| {
+                self.schema
+                    .relation(&link.relation)
+                    .is_some_and(|spec| spec.retention == Retention::Weak)
+                    && !self
+                        .state
+                        .links()
+                        .into_iter()
+                        .any(|existing| existing.target == link.target)
+            })
+            .map(|link| link.target.clone())
+            .collect()
+    }
+
+    fn delete_nodes(&mut self, subjects: impl IntoIterator<Item = String>) -> DeleteNodeChange {
         let mut deleted = BTreeSet::new();
-        let mut stack = vec![subject.to_string()];
+        let mut stack = subjects.into_iter().collect::<Vec<_>>();
 
         while let Some(current) = stack.pop() {
             if !deleted.insert(current.clone()) {
                 continue;
             }
 
-            for link in inner.state.links() {
-                let Some(spec) = inner.schema.relation(&link.relation) else {
+            for link in self.state.links() {
+                let Some(spec) = self.schema.relation(&link.relation) else {
                     continue;
                 };
                 if spec.retention == Retention::Weak && link.source == current {
@@ -78,19 +117,18 @@ impl LocusService {
             }
         }
 
-        let removed_links = inner
+        let removed_links = self
             .state
             .links()
             .into_iter()
             .filter(|link| deleted.contains(&link.source) || deleted.contains(&link.target))
             .collect::<Vec<_>>();
         let removed_link_set = removed_links.iter().cloned().collect::<BTreeSet<_>>();
-        inner
-            .state
+        self.state
             .links
             .retain(|link| !removed_link_set.contains(link));
 
-        let removed_properties = inner
+        let removed_properties = self
             .state
             .properties
             .keys()
@@ -98,15 +136,17 @@ impl LocusService {
             .cloned()
             .collect::<Vec<_>>();
         for property in &removed_properties {
-            inner.state.properties.remove(property);
+            self.state.properties.remove(property);
         }
 
-        Ok(DeleteNodeChange {
+        DeleteNodeChange {
             removed_links,
             removed_properties,
-        })
+        }
     }
+}
 
+impl LocusService {
     pub fn targets(&self, source: &str, relation: &str) -> Result<Vec<String>, ServiceError> {
         let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
         Ok(inner
@@ -344,10 +384,17 @@ impl LocusService {
             .state
             .links
             .retain(|existing| !removed_set.contains(existing));
+        let mut deleted = DeleteNodeChange {
+            removed_links: removed.clone(),
+            removed_properties: Vec::new(),
+        };
+        let roots = inner.orphaned_weak_targets(&removed);
+        deleted.extend(inner.delete_nodes(roots));
         inner.state.links.insert(link.clone());
 
         Ok(LinkSetChange::Changed {
             removed,
+            deleted,
             added: link,
         })
     }

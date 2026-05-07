@@ -118,7 +118,7 @@ impl GraphState {
         source: &str,
         relation: &str,
         target: &str,
-    ) -> zbus::fdo::Result<Link> {
+    ) -> zbus::fdo::Result<DeleteNodeChange> {
         self.service
             .remove_link(source, relation, target)
             .map_err(to_fdo)
@@ -128,7 +128,7 @@ impl GraphState {
         &self,
         source: &str,
         relation: &str,
-    ) -> zbus::fdo::Result<Vec<Link>> {
+    ) -> zbus::fdo::Result<DeleteNodeChange> {
         self.service.remove_links(source, relation).map_err(to_fdo)
     }
 

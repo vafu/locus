@@ -26,7 +26,11 @@ impl Link {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkSetChange {
     Unchanged,
-    Changed { removed: Vec<Link>, added: Link },
+    Changed {
+        removed: Vec<Link>,
+        deleted: DeleteNodeChange,
+        added: Link,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +48,11 @@ pub struct DeleteNodeChange {
 impl DeleteNodeChange {
     pub fn is_empty(&self) -> bool {
         self.removed_links.is_empty() && self.removed_properties.is_empty()
+    }
+
+    pub fn extend(&mut self, other: DeleteNodeChange) {
+        self.removed_links.extend(other.removed_links);
+        self.removed_properties.extend(other.removed_properties);
     }
 }
 
