@@ -330,6 +330,16 @@ cargo install --path locus-niri
 cargo install --path locus-graph
 ```
 
+User systemd unit templates are available in `contrib/systemd/user/`:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp contrib/systemd/user/locusd.service ~/.config/systemd/user/
+cp contrib/systemd/user/locus-niri.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now locusd.service locus-niri.service
+```
+
 ## Desktop Integration
 
 ### zsh
