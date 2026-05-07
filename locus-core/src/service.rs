@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::error::ServiceError;
 use crate::resolve::{resolve_all, resolve_kind, resolve_one};
 use crate::state::RuntimeState;
+use crate::static_store::{read_static_state, write_static_state};
 use crate::{DeleteNodeChange, Link, LinkSetChange, PropertyChange, Resolution};
 use locus_schema::{Cardinality, GraphSchema, Retention, SchemaError};
 use tracing::trace;
@@ -13,6 +15,7 @@ struct Inner {
     state: RuntimeState,
     schema: GraphSchema,
     resolutions: BTreeMap<(String, Vec<String>), Option<String>>,
+    static_store: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -27,8 +30,25 @@ impl LocusService {
                 state: RuntimeState::default(),
                 schema,
                 resolutions: BTreeMap::new(),
+                static_store: None,
             })),
         }
+    }
+
+    pub fn with_static_store(
+        schema: GraphSchema,
+        static_store: impl Into<PathBuf>,
+    ) -> Result<Self, ServiceError> {
+        let static_store = static_store.into();
+        let state = read_static_state(&schema, &static_store)?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(Inner {
+                state,
+                schema,
+                resolutions: BTreeMap::new(),
+                static_store: Some(static_store),
+            })),
+        })
     }
 
     pub fn remove_link(
@@ -46,6 +66,7 @@ impl LocusService {
         };
         let roots = inner.orphaned_weak_targets(&[link]);
         change.extend(inner.delete_nodes(roots));
+        inner.persist_static()?;
         Ok(change)
     }
 
@@ -71,12 +92,15 @@ impl LocusService {
         };
         let roots = inner.orphaned_weak_targets(&removed);
         change.extend(inner.delete_nodes(roots));
+        inner.persist_static()?;
         Ok(change)
     }
 
     pub fn delete_node(&self, subject: &str) -> Result<DeleteNodeChange, ServiceError> {
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        Ok(inner.delete_nodes([subject.to_string()]))
+        let change = inner.delete_nodes([subject.to_string()]);
+        inner.persist_static()?;
+        Ok(change)
     }
 }
 
@@ -144,6 +168,13 @@ impl Inner {
             removed_properties,
         }
     }
+
+    fn persist_static(&self) -> Result<(), ServiceError> {
+        let Some(path) = &self.static_store else {
+            return Ok(());
+        };
+        write_static_state(&self.schema, &self.state, path)
+    }
 }
 
 impl LocusService {
@@ -202,6 +233,7 @@ impl LocusService {
         if visible_before == visible_after {
             Ok(PropertyChange::Unchanged)
         } else {
+            inner.persist_static()?;
             Ok(PropertyChange::Changed)
         }
     }
@@ -212,6 +244,7 @@ impl LocusService {
             .state
             .properties
             .remove(&(subject.to_string(), key.to_string()));
+        inner.persist_static()?;
         Ok(())
     }
 
@@ -391,6 +424,7 @@ impl LocusService {
         let roots = inner.orphaned_weak_targets(&removed);
         deleted.extend(inner.delete_nodes(roots));
         inner.state.links.insert(link.clone());
+        inner.persist_static()?;
 
         Ok(LinkSetChange::Changed {
             removed,

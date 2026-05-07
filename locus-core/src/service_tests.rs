@@ -49,6 +49,39 @@ fn set_kind(service: &LocusService, subject: &str, kind: &str) {
     service.set_property(subject, "kind", kind).unwrap();
 }
 
+fn static_project_schema() -> GraphSchema {
+    GraphSchema::parse_yaml(
+        r#"
+nodes:
+  workspace: {}
+  project:
+    properties:
+      path:
+        required: true
+      name: {}
+
+relations:
+  project:
+    from: workspace
+    to: project
+    cardinality: many-to-one
+    retention: static
+"#,
+    )
+    .unwrap()
+}
+
+fn temp_static_store(name: &str) -> std::path::PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "locus-core-{name}-{}-{}.json",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
 #[test]
 fn returns_reverse_sources_for_multi_target_relations() {
     let service = service();
@@ -421,10 +454,7 @@ fn replacing_weak_link_deletes_previous_target() {
 
     assert_eq!(
         service.subjects().unwrap(),
-        vec![
-            "app-instance:new".to_string(),
-            "window:1".to_string(),
-        ]
+        vec!["app-instance:new".to_string(), "window:1".to_string(),]
     );
 }
 
@@ -440,4 +470,76 @@ fn delete_node_does_not_cascade_through_incoming_links() {
     service.delete_node("workspace:1").unwrap();
 
     assert_eq!(service.subjects().unwrap(), vec!["window:1".to_string()]);
+}
+
+#[test]
+fn static_links_and_endpoint_properties_are_loaded_as_initial_state() {
+    let schema = static_project_schema();
+    let path = temp_static_store("load");
+    std::fs::write(
+        &path,
+        r#"{
+  "links": [
+    {
+      "source": "workspace:1",
+      "relation": "project",
+      "target": "project:/tmp/locus"
+    }
+  ],
+  "properties": [
+    {
+      "subject": "workspace:1",
+      "key": "kind",
+      "value": "workspace"
+    },
+    {
+      "subject": "project:/tmp/locus",
+      "key": "kind",
+      "value": "project"
+    },
+    {
+      "subject": "project:/tmp/locus",
+      "key": "path",
+      "value": "/tmp/locus"
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let service = LocusService::with_static_store(schema, &path).unwrap();
+
+    assert_eq!(
+        service.targets("workspace:1", "project").unwrap(),
+        vec!["project:/tmp/locus".to_string()]
+    );
+    assert_eq!(
+        service
+            .property("project:/tmp/locus", "path")
+            .unwrap()
+            .as_deref(),
+        Some("/tmp/locus")
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn static_links_are_persisted_after_writes() {
+    let schema = static_project_schema();
+    let path = temp_static_store("write");
+    let service = LocusService::with_static_store(schema, &path).unwrap();
+    set_kind(&service, "workspace:1", "workspace");
+    set_kind(&service, "project:/tmp/locus", "project");
+    service
+        .set_property("project:/tmp/locus", "path", "/tmp/locus")
+        .unwrap();
+
+    service
+        .set_link("workspace:1", "project", "project:/tmp/locus")
+        .unwrap();
+
+    let persisted = std::fs::read_to_string(&path).unwrap();
+    assert!(persisted.contains("\"relation\": \"project\""));
+    assert!(persisted.contains("\"subject\": \"project:/tmp/locus\""));
+    std::fs::remove_file(path).unwrap();
 }

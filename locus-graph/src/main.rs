@@ -186,6 +186,7 @@ fn retention_name(retention: Retention) -> &'static str {
     match retention {
         Retention::Strong => "strong",
         Retention::Weak => "weak",
+        Retention::Static => "static",
     }
 }
 
@@ -241,7 +242,7 @@ const INDEX_HTML: &str = r##"<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Locus Graph</title>
   <style>
-    :root { color-scheme: dark; --bg: #111318; --panel: #181b22; --fg: #e8e9ef; --dim: #9da3b4; --line: #5b6478; --accent: #e8ac38; --green: #68c48c; --red: #df6b6b; }
+    :root { color-scheme: dark; --bg: #111318; --panel: #181b22; --fg: #e8e9ef; --dim: #9da3b4; --line: #5b6478; --strong: #7f8aa3; --accent: #e8ac38; --static: #66c7d9; --green: #68c48c; --red: #df6b6b; }
     * { box-sizing: border-box; }
     body { margin: 0; height: 100vh; overflow: hidden; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, sans-serif; }
     #app { display: grid; grid-template-columns: minmax(0, 1fr) 360px; height: 100vh; }
@@ -258,7 +259,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
     .legend-dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid currentColor; background: var(--kind-fill, #252b36); color: var(--kind-stroke, #f0c15c); }
     .legend-line { width: 18px; height: 0; border-top: 2px solid var(--line); }
+    .legend-line.strong { border-color: var(--strong); }
     .legend-line.weak { border-top-style: dashed; border-color: var(--accent); }
+    .legend-line.static { border-top-width: 3px; border-color: var(--static); }
     #details { padding: 12px 16px; border-bottom: 1px solid #2a2f3b; min-height: 132px; }
     #details .id { overflow-wrap: anywhere; color: var(--accent); font-weight: 700; }
     #details table { margin-top: 8px; width: 100%; border-collapse: collapse; }
@@ -278,7 +281,9 @@ const INDEX_HTML: &str = r##"<!doctype html>
     .event .kind { font-weight: 700; }
     .event .link { color: var(--dim); overflow-wrap: anywhere; }
     .link-line { stroke: var(--line); stroke-width: 1.6; marker-end: url(#arrow); }
+    .link-line.strong { stroke: var(--strong); stroke-width: 1.8; marker-end: url(#arrow-strong); }
     .link-line.weak { stroke: var(--accent); stroke-dasharray: 5 4; marker-end: url(#arrow-weak); }
+    .link-line.static { stroke: var(--static); stroke-width: 2.4; marker-end: url(#arrow-static); }
     .link-label { fill: var(--dim); font-size: 12px; pointer-events: none; }
     .node circle { stroke: var(--kind-stroke, #f0c15c); stroke-width: 1.5; fill: var(--kind-fill, #252b36); }
     .node text { fill: var(--fg); font-size: 13px; pointer-events: none; text-anchor: middle; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
@@ -308,8 +313,14 @@ const INDEX_HTML: &str = r##"<!doctype html>
       <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
         <path d="M 0 0 L 10 5 L 0 10 z" fill="#4e566b"></path>
       </marker>
+      <marker id="arrow-strong" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#7f8aa3"></path>
+      </marker>
       <marker id="arrow-weak" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
         <path d="M 0 0 L 10 5 L 0 10 z" fill="#e8ac38"></path>
+      </marker>
+      <marker id="arrow-static" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#66c7d9"></path>
       </marker>
     </defs>
     <g id="viewport"><g id="links"></g><g id="labels"></g><g id="nodes"></g></g>
@@ -464,8 +475,9 @@ function updateLegend() {
     return `<span class="legend-item"><span class="legend-dot" style="--kind-fill:${fill};--kind-stroke:${stroke}"></span>${esc(kind)}</span>`;
   }).join('');
   legend.innerHTML = nodeItems
-    + '<span class="legend-item"><span class="legend-line"></span>source -> target</span>'
-    + '<span class="legend-item"><span class="legend-line weak"></span>weak retention</span>';
+    + '<span class="legend-item"><span class="legend-line strong"></span>strong</span>'
+    + '<span class="legend-item"><span class="legend-line weak"></span>weak</span>'
+    + '<span class="legend-item"><span class="legend-line static"></span>static</span>';
 }
 
 function diffLog(links) {
@@ -576,8 +588,9 @@ function draw() {
     const sourceRadius = sourceNode ? radius(sourceNode) + 2 : 24;
     const targetRadius = targetNode ? radius(targetNode) + 8 : 30;
     const spec = relationSpec(l.relation);
+    const retention = spec.retention || 'strong';
     const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('class', `link-line ${spec.retention === 'weak' ? 'weak' : ''}`);
+    line.setAttribute('class', `link-line ${retention}`);
     line.setAttribute('x1', a.x + dx / d * sourceRadius); line.setAttribute('y1', a.y + dy / d * sourceRadius);
     line.setAttribute('x2', b.x - dx / d * targetRadius); line.setAttribute('y2', b.y - dy / d * targetRadius);
     linksG.append(line);

@@ -16,6 +16,9 @@ struct Args {
     schema: Option<PathBuf>,
 
     #[arg(long, value_name = "PATH")]
+    static_store: Option<PathBuf>,
+
+    #[arg(long, value_name = "PATH")]
     trace_perfetto: Option<PathBuf>,
 }
 
@@ -24,11 +27,13 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     init_tracing(args.trace_perfetto.as_ref())?;
     let schema_path = args.schema.unwrap_or_else(default_schema_path);
+    let static_store_path = args.static_store.unwrap_or_else(default_static_store_path);
     let schema = GraphSchema::load(&schema_path)
         .with_context(|| format!("load schema {}", schema_path.display()))?;
 
     eprintln!("locusd: starting");
-    let service = LocusService::with_schema(schema);
+    let service = LocusService::with_static_store(schema, &static_store_path)
+        .with_context(|| format!("load static graph {}", static_store_path.display()))?;
     let _connection = locus_dbus::serve(service)
         .await
         .context("start D-Bus service")?;
@@ -59,4 +64,12 @@ fn default_schema_path() -> PathBuf {
     }
     let home = std::env::var_os("HOME").unwrap_or_else(|| ".".into());
     PathBuf::from(home).join(".config/locus/schema.yaml")
+}
+
+fn default_static_store_path() -> PathBuf {
+    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+        return PathBuf::from(state_home).join("locus/static-graph.json");
+    }
+    let home = std::env::var_os("HOME").unwrap_or_else(|| ".".into());
+    PathBuf::from(home).join(".local/state/locus/static-graph.json")
 }

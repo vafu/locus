@@ -165,6 +165,7 @@ fn parse_retention(relation: &str, retention: Option<&str>) -> Result<Retention,
     match retention.unwrap_or("strong") {
         "strong" => Ok(Retention::Strong),
         "weak" => Ok(Retention::Weak),
+        "static" => Ok(Retention::Static),
         other => Err(SchemaError::InvalidRetention {
             relation: relation.to_string(),
             retention: other.to_string(),

@@ -104,6 +104,10 @@ not outlive the source. When `DeleteNode(source)` is called, weakly retained
 targets are deleted too. The default is `retention: strong`. Weak retention is
 rejected for relations where multiple sources may share one target.
 
+`retention: static` means matching links and their endpoint node properties are
+part of the durable default graph. `locusd` loads them before serving D-Bus and
+updates the static store after graph writes.
+
 ## Paths
 
 Paths are named directed read-side traversals. They do not validate writes. They

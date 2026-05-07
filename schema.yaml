@@ -53,7 +53,8 @@ relations:
   project:
     from: workspace
     to: project
-    cardinality: one-to-one
+    cardinality: many-to-one
+    retention: static
 
   agent-session:
     from: app-instance

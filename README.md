@@ -53,10 +53,18 @@ $XDG_CONFIG_HOME/locus/schema.yaml
 ~/.config/locus/schema.yaml
 ```
 
+Static graph state is loaded from:
+
+```text
+$XDG_STATE_HOME/locus/static-graph.json
+~/.local/state/locus/static-graph.json
+```
+
 or from an explicit path:
 
 ```sh
 locusd --schema ./schema.yaml
+locusd --schema ./schema.yaml --static-store /tmp/locus-static-graph.json
 ```
 
 The schema declares node properties, relation validation, and cardinality:
@@ -221,11 +229,13 @@ compatibility `LinkRemoved`/`LinkAdded` signals. No-op writes are quiet.
 ### `locusd`
 
 The D-Bus service. It owns `io.github.Locus`, loads the YAML schema, and stores
-the runtime graph in memory.
+the graph in memory. Relations declared with `retention: static` are persisted
+and loaded as the initial graph state before D-Bus is served.
 
 ```sh
 locusd
 locusd --schema ~/.config/locus/schema.yaml
+locusd --schema ~/.config/locus/schema.yaml --static-store ~/.local/state/locus/static-graph.json
 ```
 
 From the workspace:
@@ -363,6 +373,9 @@ When the shell enters a direct `~/proj/<project_name>` directory, it:
    ```text
    workspace:<id> --project--> project:<path>
    ```
+
+The `workspace -> project` relation is `retention: static`, so `locusd`
+persists those mappings and restores them immediately on restart.
 
 ### AGS
 

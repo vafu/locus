@@ -275,5 +275,6 @@ fn retention_name(retention: locus_schema::Retention) -> &'static str {
     match retention {
         locus_schema::Retention::Strong => "strong",
         locus_schema::Retention::Weak => "weak",
+        locus_schema::Retention::Static => "static",
     }
 }

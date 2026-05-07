@@ -17,7 +17,7 @@ relations:
     from: workspace
     to: project
     cardinality: one-to-one
-    retention: weak
+    retention: static
 
 paths:
   selected-project:
@@ -39,7 +39,7 @@ paths:
     );
     assert_eq!(
         schema.relation("project").unwrap().retention,
-        Retention::Weak
+        Retention::Static
     );
     assert_eq!(
         schema.path("selected-project").unwrap().path,

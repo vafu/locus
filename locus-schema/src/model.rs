@@ -23,6 +23,7 @@ pub enum Retention {
     #[default]
     Strong,
     Weak,
+    Static,
 }
 
 /// A schema selector for the source or target node of a relation.

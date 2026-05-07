@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 locus-schema = { path = "../locus-schema" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.147"
 thiserror = "2.0.18"
 tracing = "0.1.44"

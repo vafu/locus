@@ -2,6 +2,7 @@ pub mod error;
 pub mod resolve;
 pub mod service;
 pub mod state;
+pub mod static_store;
 pub mod types;
 
 #[cfg(test)]
