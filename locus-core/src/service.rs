@@ -4,10 +4,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::ServiceError;
 use crate::resolve::{resolve_all, resolve_kind, resolve_one};
 use crate::state::RuntimeState;
-use locus_api::{
-    DeleteNodeChange, Graph, GraphError, GraphResult, Link, LinkSetChange, PropertyChange,
-    Resolution,
-};
+use crate::{DeleteNodeChange, Link, LinkSetChange, PropertyChange, Resolution};
 use locus_schema::{Cardinality, GraphSchema, Retention, SchemaError};
 use tracing::trace;
 
@@ -16,95 +13,6 @@ struct Inner {
     state: RuntimeState,
     schema: GraphSchema,
     resolutions: BTreeMap<(String, Vec<String>), Option<String>>,
-}
-
-impl Graph for LocusService {
-    fn set_link(&self, source: &str, relation: &str, target: &str) -> GraphResult<LinkSetChange> {
-        self.set_link(source, relation, target)
-            .map_err(to_graph_error)
-    }
-
-    fn remove_link(&self, source: &str, relation: &str, target: &str) -> GraphResult<Link> {
-        self.remove_link(source, relation, target)
-            .map_err(to_graph_error)
-    }
-
-    fn remove_links(&self, source: &str, relation: &str) -> GraphResult<Vec<Link>> {
-        self.remove_links(source, relation).map_err(to_graph_error)
-    }
-
-    fn delete_node(&self, subject: &str) -> GraphResult<DeleteNodeChange> {
-        self.delete_node(subject).map_err(to_graph_error)
-    }
-
-    fn targets(&self, source: &str, relation: &str) -> GraphResult<Vec<String>> {
-        self.targets(source, relation).map_err(to_graph_error)
-    }
-
-    fn sources(&self, target: &str, relation: &str) -> GraphResult<Vec<String>> {
-        self.sources(target, relation).map_err(to_graph_error)
-    }
-
-    fn links(&self, subject: &str) -> GraphResult<Vec<Link>> {
-        self.links(subject).map_err(to_graph_error)
-    }
-
-    fn all_links(&self) -> GraphResult<Vec<Link>> {
-        self.all_links().map_err(to_graph_error)
-    }
-
-    fn set_property(&self, subject: &str, key: &str, value: &str) -> GraphResult<PropertyChange> {
-        self.set_property(subject, key, value)
-            .map_err(to_graph_error)
-    }
-
-    fn remove_property(&self, subject: &str, key: &str) -> GraphResult<()> {
-        self.remove_property(subject, key).map_err(to_graph_error)
-    }
-
-    fn property(&self, subject: &str, key: &str) -> GraphResult<Option<String>> {
-        self.property(subject, key).map_err(to_graph_error)
-    }
-
-    fn properties(&self, subject: &str) -> GraphResult<std::collections::HashMap<String, String>> {
-        self.properties(subject)
-            .map(|properties| properties.into_iter().collect())
-            .map_err(to_graph_error)
-    }
-
-    fn subjects(&self) -> GraphResult<Vec<String>> {
-        self.subjects().map_err(to_graph_error)
-    }
-
-    fn subjects_with_property(&self, key: &str, value: Option<&str>) -> GraphResult<Vec<String>> {
-        self.subjects_with_property(key, value)
-            .map_err(to_graph_error)
-    }
-
-    fn resolve_kind(&self, source: &str, kind: &str) -> GraphResult<Option<String>> {
-        self.resolve_kind(source, kind).map_err(to_graph_error)
-    }
-
-    fn resolve_path(&self, source: &str, path: &[String]) -> GraphResult<Option<String>> {
-        self.resolve_path(source, path).map_err(to_graph_error)
-    }
-
-    fn resolve_all(&self, source: &str, path: &[String]) -> GraphResult<Vec<String>> {
-        self.resolve_all(source, path).map_err(to_graph_error)
-    }
-
-    fn subscribe_resolution(&self, source: &str, path: &[String]) -> GraphResult<Resolution> {
-        self.subscribe_resolution(source, path)
-            .map_err(to_graph_error)
-    }
-
-    fn refresh_resolutions(&self) -> GraphResult<Vec<Resolution>> {
-        self.refresh_resolutions().map_err(to_graph_error)
-    }
-}
-
-fn to_graph_error(error: ServiceError) -> GraphError {
-    GraphError::new(error.to_string())
 }
 
 #[derive(Clone, Debug)]

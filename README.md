@@ -112,7 +112,6 @@ The source of truth is `kind` metadata plus relation schema.
 The repository is a Cargo workspace. Each crate owns one responsibility:
 
 ```text
-locus-api     transport-neutral graph trait and shared graph types
 locus-codegen TypeScript helper generator from schema.yaml
 locus-core    in-memory graph runtime and schema-enforced graph behavior
 locus-dbus    D-Bus adapter, generated proxy, client helpers, wire conventions
@@ -123,10 +122,9 @@ locus-niri    Niri publisher binary
 locus-graph   local graph inspection UI binary
 ```
 
-Runtime code should implement `locus-api::Graph` without importing D-Bus.
-Client/publisher crates that talk to the running daemon should depend on
-`locus-dbus`, not daemon internals. `locus-dbus` is the only crate that should
-know about zbus interface/proxy details.
+`locus-core` owns the in-process runtime. D-Bus is the public process boundary:
+client/publisher crates that talk to the running daemon should depend on
+`locus-dbus`, not daemon internals.
 
 ## D-Bus API
 
@@ -142,36 +140,42 @@ Object path:
 /io/github/Locus
 ```
 
-Interface:
+Interfaces:
 
 ```text
-io.github.Locus.Graph
+io.github.Locus.Graph.Read
+io.github.Locus.Graph.Write
+io.github.Locus.Graph.Resolve
 ```
 
 Methods:
 
 ```text
+io.github.Locus.Graph.Write
 SetLink(source: s, relation: s, target: s)
 RemoveLink(source: s, relation: s, target: s)
 RemoveLinks(source: s, relation: s)
 DeleteNode(subject: s)
+SetProperty(subject: s, key: s, value: s)
+RemoveProperty(subject: s, key: s)
+ApplyMutations(mutations: a(ssss))
 
+io.github.Locus.Graph.Read
 GetTargets(source: s, relation: s) -> as
 GetSources(target: s, relation: s) -> as
 GetLinks(subject: s) -> a(sss)
 GetAllLinks() -> a(sss)
-
-SetProperty(subject: s, key: s, value: s)
-RemoveProperty(subject: s, key: s)
 GetProperty(subject: s, key: s) -> s
 GetProperties(subject: s) -> a{ss}
 GetSubjects() -> as
 FindSubjects(key: s, value: s) -> as
 
+io.github.Locus.Graph.Resolve
 Resolve(source: s, path: as) -> s
 ResolveAll(source: s, path: as) -> as
 SubscribeResolve(source: s, path: as) -> s
 FindNearest(source: s, kind: s) -> s
+WatchNode(source: s, path: as) -> o
 ```
 
 Empty strings represent optional `None` over D-Bus.
@@ -208,8 +212,9 @@ PropertyRemoved(subject: s, key: s)
 ResolveChanged(source: s, path: as, target: s)
 ```
 
-`SetLink` emits `LinkSet` and compatibility `LinkRemoved`/`LinkAdded` signals.
-No-op writes are quiet.
+Write signals are emitted on `io.github.Locus.Graph.Write`; resolve signals are
+emitted on `io.github.Locus.Graph.Resolve`. `SetLink` emits `LinkSet` and
+compatibility `LinkRemoved`/`LinkAdded` signals. No-op writes are quiet.
 
 ## Binaries
 
@@ -372,7 +377,9 @@ window, and passes it through `LOCUS_APP_INSTANCE`.
 ## Useful Debug Commands
 
 ```sh
-busctl --user introspect io.github.Locus /io/github/Locus io.github.Locus.Graph
+busctl --user introspect io.github.Locus /io/github/Locus io.github.Locus.Graph.Read
+busctl --user introspect io.github.Locus /io/github/Locus io.github.Locus.Graph.Write
+busctl --user introspect io.github.Locus /io/github/Locus io.github.Locus.Graph.Resolve
 locusctl link all
 locusctl prop subjects --key kind
 locusctl resolve context:selected window workspace

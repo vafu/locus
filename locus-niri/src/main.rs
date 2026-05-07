@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use locus_dbus::Client;
+use locus_dbus::{GraphReadProxy, GraphWriteProxy};
 use projection::GraphProjection;
 use publisher::{apply_mutations, clear_existing_niri_edges};
 
@@ -31,12 +31,15 @@ async fn main() -> anyhow::Result<()> {
     let connection = zbus::Connection::session()
         .await
         .context("connect to session D-Bus")?;
-    let client = Client::new(&connection)
+    let read = GraphReadProxy::new(&connection)
         .await
-        .context("connect to locusd")?;
+        .context("connect read proxy to locusd")?;
+    let write = GraphWriteProxy::new(&connection)
+        .await
+        .context("connect write proxy to locusd")?;
     let mut projection = GraphProjection::default();
 
-    clear_existing_niri_edges(&client)
+    clear_existing_niri_edges(&read, &write)
         .await
         .context("clear old Niri graph state")?;
     let mut events = ipc::event_stream()?;
@@ -54,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
                 let span = tracing::trace_span_for_event(&event);
                 let _guard = span.enter();
                 let mutations = projection.project(event)?;
-                apply_mutations(&client, mutations)
+                apply_mutations(&write, mutations)
                     .await
                     .context("publish Niri graph mutations")?;
             }

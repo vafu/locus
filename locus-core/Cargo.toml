@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-locus-api = { path = "../locus-api" }
 locus-schema = { path = "../locus-schema" }
 thiserror = "2.0.18"
 tracing = "0.1.44"

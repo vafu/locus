@@ -7,7 +7,7 @@ use anyhow::{Context as AnyhowContext, bail};
 use cel::{Context as CelContext, Program as CelProgram, Value as CelValue};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use futures_util::StreamExt;
-use locus_dbus::{ClientExt, GraphProxy, LocusClient};
+use locus_dbus::{GraphReadProxy, GraphResolveProxy, GraphWriteProxy, NONE_STRING};
 
 #[derive(Debug, Parser)]
 #[command(name = "locusctl")]
@@ -246,61 +246,67 @@ async fn main() -> anyhow::Result<()> {
     let connection = zbus::Connection::session()
         .await
         .context("connect to session D-Bus")?;
-    let client = LocusClient::new(&connection)
+    let read = GraphReadProxy::new(&connection)
         .await
-        .context("connect to locusd")?;
+        .context("connect read proxy to locusd")?;
+    let write = GraphWriteProxy::new(&connection)
+        .await
+        .context("connect write proxy to locusd")?;
+    let resolve = GraphResolveProxy::new(&connection)
+        .await
+        .context("connect resolve proxy to locusd")?;
 
     match args.command {
         Command::Link { command } => match command {
             LinkCommand::Set(args) => {
-                client
+                write
                     .set_link(&args.source, &args.relation, &args.target)
                     .await?;
             }
             LinkCommand::Remove(args) => {
-                client
+                write
                     .remove_link(&args.source, &args.relation, &args.target)
                     .await?;
             }
             LinkCommand::Clear(args) => {
-                client.remove_links(&args.source, &args.relation).await?;
+                write.remove_links(&args.source, &args.relation).await?;
             }
             LinkCommand::Targets(args) => {
                 print_query(
-                    client.get_targets(&args.subject, &args.relation).await?,
+                    read.get_targets(&args.subject, &args.relation).await?,
                     args.first,
                 );
             }
             LinkCommand::Sources(args) => {
                 print_query(
-                    client.get_sources(&args.subject, &args.relation).await?,
+                    read.get_sources(&args.subject, &args.relation).await?,
                     args.first,
                 );
             }
             LinkCommand::List { subject } => {
-                for (source, relation, target) in client.get_links(&subject).await? {
+                for (source, relation, target) in read.get_links(&subject).await? {
                     println!("{source}\t{relation}\t{target}");
                 }
             }
             LinkCommand::All => {
-                for (source, relation, target) in client.get_all_links().await? {
+                for (source, relation, target) in read.get_all_links().await? {
                     println!("{source}\t{relation}\t{target}");
                 }
             }
         },
         Command::Prop { command } => match command {
             PropCommand::Set(args) => {
-                client
+                write
                     .set_property(&args.subject, &args.key, &args.value)
                     .await?;
             }
             PropCommand::Get(args) => {
-                if let Some(value) = client.property_opt(&args.subject, &args.key).await? {
+                if let Some(value) = none(read.get_property(&args.subject, &args.key).await?) {
                     println!("{value}");
                 }
             }
             PropCommand::List { subject } => {
-                let mut properties = client
+                let mut properties = read
                     .get_properties(&subject)
                     .await?
                     .into_iter()
@@ -312,47 +318,47 @@ async fn main() -> anyhow::Result<()> {
             }
             PropCommand::Subjects(args) => {
                 let subjects = if let Some(key) = args.key {
-                    client
-                        .find_subjects_opt(&key, args.value.as_deref())
+                    read.find_subjects(&key, args.value.as_deref().unwrap_or(NONE_STRING))
                         .await?
                 } else if args.value.is_some() {
                     bail!("--value requires --key");
                 } else {
-                    client.get_subjects().await?
+                    read.get_subjects().await?
                 };
                 print_lines(subjects);
             }
             PropCommand::Remove(args) => {
-                client.remove_property(&args.subject, &args.key).await?;
+                write.remove_property(&args.subject, &args.key).await?;
             }
         },
         Command::Context { command } => match command {
             ContextCommand::Set(args) => {
-                client
-                    .set_context_link(&args.name, &args.relation, &args.target)
+                write
+                    .set_link(&context_subject(&args.name), &args.relation, &args.target)
                     .await?;
             }
             ContextCommand::Get(args) => {
                 print_query(
-                    client.context_targets(&args.name, &args.relation).await?,
+                    read.get_targets(&context_subject(&args.name), &args.relation)
+                        .await?,
                     args.first,
                 );
             }
         },
         Command::Resolve(args) => {
-            if let Some(subject) = client.resolve_opt(&args.source, args.path).await? {
+            if let Some(subject) = none(resolve.resolve(&args.source, args.path).await?) {
                 println!("{subject}");
             }
         }
         Command::ResolveAll(args) => {
-            print_lines(client.resolve_all(&args.source, args.path).await?);
+            print_lines(resolve.resolve_all(&args.source, args.path).await?);
         }
         Command::FindNearest(args) => {
-            if let Some(subject) = client.find_nearest_opt(&args.source, &args.kind).await? {
+            if let Some(subject) = none(resolve.find_nearest(&args.source, &args.kind).await?) {
                 println!("{subject}");
             }
         }
-        Command::Watch(args) => watch(&connection, &client, args).await?,
+        Command::Watch(args) => watch(&connection, &read, args).await?,
     }
 
     Ok(())
@@ -360,7 +366,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn watch(
     connection: &zbus::Connection,
-    client: &LocusClient<'_>,
+    read: &GraphReadProxy<'_>,
     args: WatchArgs,
 ) -> anyhow::Result<()> {
     let filter = args
@@ -368,7 +374,7 @@ async fn watch(
         .as_deref()
         .map(WatchFilter::compile)
         .transpose()?;
-    let proxy = GraphProxy::new(connection)
+    let proxy = GraphWriteProxy::new(connection)
         .await
         .context("connect signal proxy to locusd")?;
     let mut link_added = proxy.receive_link_added().await?;
@@ -389,7 +395,7 @@ async fn watch(
                         target: signal_args.target.to_string(),
                     }
                 };
-                handle_watch_event(client, &args, filter.as_ref(), event).await?;
+                handle_watch_event(read, &args, filter.as_ref(), event).await?;
             }
             signal = link_removed.next() => {
                 let Some(signal) = signal else { break; };
@@ -401,7 +407,7 @@ async fn watch(
                         target: signal_args.target.to_string(),
                     }
                 };
-                handle_watch_event(client, &args, filter.as_ref(), event).await?;
+                handle_watch_event(read, &args, filter.as_ref(), event).await?;
             }
             signal = link_set.next() => {
                 let Some(signal) = signal else { break; };
@@ -414,7 +420,7 @@ async fn watch(
                         target: signal_args.target.to_string(),
                     }
                 };
-                handle_watch_event(client, &args, filter.as_ref(), event).await?;
+                handle_watch_event(read, &args, filter.as_ref(), event).await?;
             }
             signal = property_changed.next() => {
                 let Some(signal) = signal else { break; };
@@ -426,7 +432,7 @@ async fn watch(
                         value: signal_args.value.to_string(),
                     }
                 };
-                handle_watch_event(client, &args, filter.as_ref(), event).await?;
+                handle_watch_event(read, &args, filter.as_ref(), event).await?;
             }
             signal = property_removed.next() => {
                 let Some(signal) = signal else { break; };
@@ -437,7 +443,7 @@ async fn watch(
                         key: signal_args.key.to_string(),
                     }
                 };
-                handle_watch_event(client, &args, filter.as_ref(), event).await?;
+                handle_watch_event(read, &args, filter.as_ref(), event).await?;
             }
             result = tokio::signal::ctrl_c() => {
                 result.context("wait for ctrl-c")?;
@@ -450,12 +456,12 @@ async fn watch(
 }
 
 async fn handle_watch_event(
-    client: &LocusClient<'_>,
+    read: &GraphReadProxy<'_>,
     args: &WatchArgs,
     filter: Option<&WatchFilter>,
     event: WatchEvent,
 ) -> anyhow::Result<()> {
-    if !event_matches(client, args, filter, &event).await? {
+    if !event_matches(read, args, filter, &event).await? {
         return Ok(());
     }
 
@@ -466,7 +472,7 @@ async fn handle_watch_event(
 }
 
 async fn event_matches(
-    client: &LocusClient<'_>,
+    read: &GraphReadProxy<'_>,
     args: &WatchArgs,
     filter: Option<&WatchFilter>,
     event: &WatchEvent,
@@ -518,7 +524,7 @@ async fn event_matches(
         let Some(subject) = event.subject() else {
             return Ok(false);
         };
-        let properties = client.get_properties(subject).await?;
+        let properties = read.get_properties(subject).await?;
         if args
             .missing_properties
             .iter()
@@ -747,4 +753,12 @@ fn print_lines(values: Vec<String>) {
     for value in values {
         println!("{value}");
     }
+}
+
+fn none(value: String) -> Option<String> {
+    (value != NONE_STRING).then_some(value)
+}
+
+fn context_subject(context: &str) -> String {
+    format!("context:{context}")
 }

@@ -594,10 +594,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "locus-api"
-version = "0.1.0"
-
-[[package]]
 name = "locus-codegen"
 version = "0.1.0"
 dependencies = [
@@ -610,7 +606,6 @@ dependencies = [
 name = "locus-core"
 version = "0.1.0"
 dependencies = [
- "locus-api",
  "locus-schema",
  "thiserror 2.0.18",
  "tracing",
@@ -620,7 +615,7 @@ dependencies = [
 name = "locus-dbus"
 version = "0.1.0"
 dependencies = [
- "locus-api",
+ "locus-core",
  "tracing",
  "zbus",
 ]

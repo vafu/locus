@@ -1,8 +1,8 @@
 use std::collections::{BTreeSet, VecDeque};
 
+use crate::Link;
 use crate::error::ServiceError;
 use crate::state::RuntimeState;
-use locus_api::Link;
 
 fn outgoing_neighbors(links: &BTreeSet<Link>, subject: &str) -> Vec<String> {
     links

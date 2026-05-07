@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
-use locus_dbus::{Client, LinkTuple};
+use locus_dbus::{GraphReadProxy, LinkTuple};
 use locus_schema::{Cardinality, GraphSchema, NodeSelector, Retention};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -62,8 +62,10 @@ async fn handle(mut stream: TcpStream, connection: Arc<zbus::Connection>) -> any
 }
 
 async fn graph_json(connection: &zbus::Connection) -> anyhow::Result<String> {
-    let client = Client::new(connection).await.context("connect to locusd")?;
-    let links = client.get_all_links().await.context("get graph links")?;
+    let read = GraphReadProxy::new(connection)
+        .await
+        .context("connect read proxy to locusd")?;
+    let links = read.get_all_links().await.context("get graph links")?;
     let mut subjects = BTreeSet::new();
     for (source, _, target) in &links {
         subjects.insert(source.clone());
@@ -74,7 +76,7 @@ async fn graph_json(connection: &zbus::Connection) -> anyhow::Result<String> {
     for subject in &subjects {
         properties.insert(
             subject.clone(),
-            client.get_properties(subject).await.unwrap_or_default(),
+            read.get_properties(subject).await.unwrap_or_default(),
         );
     }
 

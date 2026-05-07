@@ -1,4 +1,4 @@
-use locus_api::Link;
+use crate::Link;
 use locus_schema::PropertySource;
 use std::collections::{BTreeMap, BTreeSet};
 

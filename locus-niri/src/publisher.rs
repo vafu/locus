@@ -1,7 +1,8 @@
 use anyhow::Context;
 use locus_dbus::{
-    Client, ClientExt, MUTATION_DELETE_NODE, MUTATION_REMOVE_LINK, MUTATION_REMOVE_LINKS,
-    MUTATION_REMOVE_PROPERTY, MUTATION_SET_LINK, MUTATION_SET_PROPERTY, MutationTuple,
+    GraphReadProxy, GraphWriteProxy, MUTATION_DELETE_NODE, MUTATION_REMOVE_LINK,
+    MUTATION_REMOVE_LINKS, MUTATION_REMOVE_PROPERTY, MUTATION_SET_LINK, MUTATION_SET_PROPERTY,
+    MutationTuple, NONE_STRING,
 };
 
 use crate::graph::{
@@ -12,7 +13,7 @@ use crate::graph::{
 const STALE_SELECTED_WORKSPACE_RELATION: &str = "selected-workspace";
 
 pub async fn apply_mutations(
-    client: &Client<'_>,
+    write: &GraphWriteProxy<'_>,
     mutations: Vec<GraphMutation>,
 ) -> anyhow::Result<()> {
     let span = tracing::trace_span!("locus.apply_mutations", count = mutations.len());
@@ -51,7 +52,7 @@ pub async fn apply_mutations(
         })
         .collect::<Vec<_>>();
 
-    client
+    write
         .apply_mutations(mutations)
         .await
         .context("apply Locus mutation batch")?;
@@ -62,8 +63,11 @@ fn mutation_tuple(operation: &str, first: String, second: String, third: String)
     (operation.to_string(), first, second, third)
 }
 
-pub async fn clear_existing_niri_edges(client: &Client<'_>) -> anyhow::Result<()> {
-    let links = client
+pub async fn clear_existing_niri_edges(
+    read: &GraphReadProxy<'_>,
+    write: &GraphWriteProxy<'_>,
+) -> anyhow::Result<()> {
+    let links = read
         .get_all_links()
         .await
         .context("get existing Locus links")?;
@@ -82,7 +86,7 @@ pub async fn clear_existing_niri_edges(client: &Client<'_>) -> anyhow::Result<()
             || is_window_workspace
             || is_workspace_output
         {
-            client
+            write
                 .remove_link(&source, &relation, &target)
                 .await
                 .with_context(|| {
@@ -91,15 +95,15 @@ pub async fn clear_existing_niri_edges(client: &Client<'_>) -> anyhow::Result<()
         }
     }
 
-    client
+    write
         .remove_links(&context_subject(SELECTED_CONTEXT), WORKSPACE_RELATION)
         .await
         .context("remove stale selected workspace links")?;
-    client
+    write
         .remove_links(&context_subject(SELECTED_CONTEXT), WINDOW_RELATION)
         .await
         .context("remove stale selected window links")?;
-    client
+    write
         .remove_links(
             &context_subject(SELECTED_CONTEXT),
             STALE_SELECTED_WORKSPACE_RELATION,
@@ -112,16 +116,17 @@ pub async fn clear_existing_niri_edges(client: &Client<'_>) -> anyhow::Result<()
         ("workspace", WORKSPACE_PROPERTY_KEYS),
         ("output", OUTPUT_PROPERTY_KEYS),
     ] {
-        let subjects = client
-            .find_subjects_opt("kind", Some(kind))
+        let subjects = read
+            .find_subjects("kind", kind)
             .await
             .with_context(|| format!("find stale Niri {kind} subjects"))?;
         for subject in subjects {
-            let is_niri_node = client
-                .property_opt(&subject, "source")
-                .await
-                .with_context(|| format!("read {subject}[source]"))?
-                .as_deref()
+            let is_niri_node = none(
+                read.get_property(&subject, "source")
+                    .await
+                    .with_context(|| format!("read {subject}[source]"))?,
+            )
+            .as_deref()
                 == Some("niri");
             if is_niri_node
                 || subject.starts_with("window:")
@@ -131,7 +136,7 @@ pub async fn clear_existing_niri_edges(client: &Client<'_>) -> anyhow::Result<()
                 || subject.starts_with("niri:workspace:")
             {
                 for key in keys {
-                    client
+                    write
                         .remove_property(&subject, key)
                         .await
                         .with_context(|| format!("remove stale Niri property {subject}[{key}]"))?;
@@ -140,4 +145,8 @@ pub async fn clear_existing_niri_edges(client: &Client<'_>) -> anyhow::Result<()
         }
     }
     Ok(())
+}
+
+fn none(value: String) -> Option<String> {
+    (value != NONE_STRING).then_some(value)
 }

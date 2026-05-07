@@ -5,7 +5,6 @@
 Keep the workspace split by responsibility:
 
 ```text
-locus-api     transport-neutral graph trait and shared graph types
 locus-codegen TypeScript helper generator from schema.yaml
 locus-core    in-memory graph runtime and schema-enforced graph behavior
 locus-dbus    D-Bus adapter, generated proxy, client helpers, wire conventions
@@ -17,32 +16,29 @@ locus-graph   local graph inspection UI binary
 ```
 
 Client and publisher crates that talk to the running daemon should depend on
-`locus-dbus`, not on daemon internals. Pure Rust graph contracts belong in
-`locus-api`.
+`locus-dbus`, not on daemon internals.
 
 ## Public API Rules
 
-Prefer traits for public contracts whenever practical. Put public traits and
-transport-neutral graph types in `locus-api` when they describe the logical
-Locus API.
+The public process contract is D-Bus. Keep Rust crate boundaries practical and
+avoid adding transport-neutral traits unless there is a real second transport or
+implementation that needs them.
 
-Examples of things that belong in `locus-api`:
+Examples of things that belong in `locus-core`:
 
-- `Graph` and other transport-neutral traits.
+- Runtime graph state and schema enforcement.
 - Shared graph types such as `Link`, `LinkSetChange`, `PropertyChange`, and `Resolution`.
-- Error/result types that are not tied to a transport.
+- In-process service errors.
 
 Examples of things that belong in `locus-dbus`:
 
 - D-Bus constants and wire type aliases.
 - zbus interface definitions and generated proxies.
-- `LocusClient` and D-Bus client helpers.
-- D-Bus signal emission and conversion from `locus-api` errors to fdo errors.
+- D-Bus signal emission and conversion from `locus-core` errors to fdo errors.
 
-Examples of things that do not belong in `locus-api`:
+Examples of things that do not belong in `locus-core`:
 
-- In-memory graph storage.
-- Schema enforcement internals.
+- D-Bus signal emission.
 - Niri-specific publishing logic.
 - CLI formatting and argument parsing.
 - Web UI rendering.
@@ -73,7 +69,7 @@ publisher data.
 Keep runtime modules separate from D-Bus and CLI concerns. `service`, `state`,
 `resolve`, and `error` should not import clap, zbus, niri-ipc, HTTP, AGS, or
 shell-specific code. D-Bus adaptation belongs in `locus-dbus`, and it should
-wrap `locus-api::Graph`.
+wrap `LocusService` directly.
 
 ## Binary Rules
 

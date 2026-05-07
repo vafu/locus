@@ -1,6 +1,6 @@
 use crate::error::ServiceError;
 use crate::service::LocusService;
-use locus_api::{LinkSetChange, PropertyChange, Resolution};
+use crate::{LinkSetChange, PropertyChange, Resolution};
 use locus_schema::{GraphSchema, SchemaError};
 
 fn service() -> LocusService {
