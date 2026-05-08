@@ -41,6 +41,7 @@ pub struct ProjectedGraph {
     pub workspace_outputs: BTreeSet<(String, String)>,
     pub properties: BTreeMap<(String, String), String>,
     pub focused_window: Option<String>,
+    pub focused_workspace: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +206,7 @@ pub fn state_to_graph(state: &EventStreamState) -> ProjectedGraph {
         .values()
         .find(|workspace| workspace.is_focused)
         .cloned();
+    let focused_workspace_subject = focused_workspace.as_ref().map(workspace_subject);
     let focused_window = state
         .windows
         .windows
@@ -230,6 +232,7 @@ pub fn state_to_graph(state: &EventStreamState) -> ProjectedGraph {
         workspace_outputs,
         properties,
         focused_window,
+        focused_workspace: focused_workspace_subject,
     }
 }
 
@@ -313,6 +316,14 @@ pub fn diff_graphs(previous: &ProjectedGraph, next: &ProjectedGraph) -> Vec<Grap
             SELECTED_CONTEXT,
             WINDOW_RELATION,
             next.focused_window.clone(),
+        );
+    }
+    if previous.focused_workspace != next.focused_workspace {
+        push_context_mutation(
+            &mut mutations,
+            SELECTED_CONTEXT,
+            WORKSPACE_RELATION,
+            next.focused_workspace.clone(),
         );
     }
     mutations

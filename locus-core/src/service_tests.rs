@@ -29,6 +29,10 @@ relations:
     from: workspace
     to: project
     cardinality: one-to-one
+  session-project:
+    from: agent-session
+    to: project
+    cardinality: many-to-one
   app-instance:
     from: window
     to: app-instance

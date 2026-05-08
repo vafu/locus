@@ -29,3 +29,18 @@ locus_context_get() {
 locus_context_set() {
   "$LOCUSCTL" context set "$@"
 }
+
+locus_watch_path() {
+  local source="${1:?usage: locus_watch_path <source> <relation...>}"
+  shift
+
+  "$LOCUSCTL" watch-path "$source" "$@"
+}
+
+locus_watch_path_prop() {
+  local source="${1:?usage: locus_watch_path_prop <source> <key> <relation...>}"
+  local key="${2:?usage: locus_watch_path_prop <source> <key> <relation...>}"
+  shift 2
+
+  "$LOCUSCTL" watch-path "$source" "$@" --property "$key"
+}

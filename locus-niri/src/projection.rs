@@ -66,6 +66,7 @@ impl GraphProjection {
             }
             Event::WorkspaceActivated { .. } => {
                 self.project_workspace_activity(mutations);
+                self.project_selected_workspace(mutations);
             }
             Event::WorkspaceActiveWindowChanged {
                 workspace_id,
@@ -139,6 +140,17 @@ impl GraphProjection {
                 workspace.is_focused.to_string(),
             );
         }
+    }
+
+    fn project_selected_workspace(&mut self, mutations: &mut Vec<GraphMutation>) {
+        let focused_workspace = self
+            .niri
+            .workspaces
+            .workspaces
+            .values()
+            .find(|workspace| workspace.is_focused)
+            .map(workspace_subject);
+        self.set_selected_workspace(mutations, focused_workspace);
     }
 
     fn project_window(&mut self, mutations: &mut Vec<GraphMutation>, window: &niri_ipc::Window) {
@@ -297,6 +309,22 @@ impl GraphProjection {
         self.set_context(mutations, SELECTED_CONTEXT, WINDOW_RELATION, focused_window);
     }
 
+    fn set_selected_workspace(
+        &mut self,
+        mutations: &mut Vec<GraphMutation>,
+        focused_workspace: Option<String>,
+    ) {
+        if self.graph.focused_workspace == focused_workspace {
+            return;
+        }
+        self.set_context(
+            mutations,
+            SELECTED_CONTEXT,
+            WORKSPACE_RELATION,
+            focused_workspace,
+        );
+    }
+
     fn project_window_identity(&mut self, mutations: &mut Vec<GraphMutation>, window: &str) {
         self.set_property(mutations, window.to_string(), "kind", "window");
         self.set_property(mutations, window.to_string(), "source", "niri");
@@ -314,6 +342,7 @@ impl GraphProjection {
     ) {
         let stored = match relation {
             WINDOW_RELATION => &mut self.graph.focused_window,
+            WORKSPACE_RELATION => &mut self.graph.focused_workspace,
             _ => return,
         };
         if *stored == target {

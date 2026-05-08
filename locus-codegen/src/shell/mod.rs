@@ -39,6 +39,12 @@ fn generate_shell(schema: &GraphSchema, out: &mut dyn Write) -> std::io::Result<
     writeln!(out, "# Source this file from bash or zsh.")?;
     writeln!(out)?;
     writeln!(out, ": \"${{LOCUSCTL:=locusctl}}\"")?;
+    writeln!(
+        out,
+        "if [ \"$LOCUSCTL\" = \"locusctl\" ] && [ -x \"$HOME/.cargo/bin/locusctl\" ]; then"
+    )?;
+    writeln!(out, "  LOCUSCTL=\"$HOME/.cargo/bin/locusctl\"")?;
+    writeln!(out, "fi")?;
     writeln!(out)?;
 
     write_base_functions(out)?;
@@ -112,6 +118,32 @@ fn write_path_functions(
         writeln!(out, "  [ -n \"$subject\" ] || return 1")?;
         writeln!(out, "  \"$LOCUSCTL\" prop list \"$subject\"")?;
         writeln!(out, "}}\n")?;
+
+        writeln!(out, "locus_watch_{}() {{", shell_name(name))?;
+        writeln!(
+            out,
+            "  local source=\"${{1:?usage: locus_watch_{} <source>}}\"",
+            shell_name(name)
+        )?;
+        writeln!(out, "  locus_watch_path \"$source\" {path_args}")?;
+        writeln!(out, "}}\n")?;
+
+        writeln!(out, "locus_watch_{}_prop() {{", shell_name(name))?;
+        writeln!(
+            out,
+            "  local source=\"${{1:?usage: locus_watch_{}_prop <source> <key>}}\"",
+            shell_name(name)
+        )?;
+        writeln!(
+            out,
+            "  local key=\"${{2:?usage: locus_watch_{}_prop <source> <key>}}\"",
+            shell_name(name)
+        )?;
+        writeln!(
+            out,
+            "  locus_watch_path_prop \"$source\" \"$key\" {path_args}"
+        )?;
+        writeln!(out, "}}\n")?;
     } else {
         let source = shell_quote(&path.source);
         writeln!(out, "{function}() {{")?;
@@ -136,6 +168,19 @@ fn write_path_functions(
         writeln!(out, "  [ -n \"$subject\" ] || return 1")?;
         writeln!(out, "  \"$LOCUSCTL\" prop list \"$subject\"")?;
         writeln!(out, "}}\n")?;
+
+        writeln!(out, "locus_watch_{}() {{", shell_name(name))?;
+        writeln!(out, "  locus_watch_path {source} {path_args}")?;
+        writeln!(out, "}}\n")?;
+
+        writeln!(out, "locus_watch_{}_prop() {{", shell_name(name))?;
+        writeln!(
+            out,
+            "  local key=\"${{1:?usage: locus_watch_{}_prop <key>}}\"",
+            shell_name(name)
+        )?;
+        writeln!(out, "  locus_watch_path_prop {source} \"$key\" {path_args}")?;
+        writeln!(out, "}}\n")?;
     }
 
     if let Some(kind) = path_target_kind(schema, path) {
@@ -146,9 +191,42 @@ fn write_path_functions(
                     writeln!(out, "{property_function}() {{")?;
                     writeln!(out, "  {function}_prop \"$1\" {}", shell_quote(property))?;
                     writeln!(out, "}}\n")?;
+
+                    writeln!(
+                        out,
+                        "locus_watch_{}_{}() {{",
+                        shell_name(name),
+                        shell_name(property)
+                    )?;
+                    writeln!(
+                        out,
+                        "  local source=\"${{1:?usage: locus_watch_{}_{} <source>}}\"",
+                        shell_name(name),
+                        shell_name(property)
+                    )?;
+                    writeln!(
+                        out,
+                        "  locus_watch_path_prop \"$source\" {} {path_args}",
+                        shell_quote(property)
+                    )?;
+                    writeln!(out, "}}\n")?;
                 } else {
                     writeln!(out, "{property_function}() {{")?;
                     writeln!(out, "  {function}_prop {}", shell_quote(property))?;
+                    writeln!(out, "}}\n")?;
+
+                    writeln!(
+                        out,
+                        "locus_watch_{}_{}() {{",
+                        shell_name(name),
+                        shell_name(property)
+                    )?;
+                    writeln!(
+                        out,
+                        "  locus_watch_path_prop {} {} {path_args}",
+                        shell_quote(&path.source),
+                        shell_quote(property)
+                    )?;
                     writeln!(out, "}}\n")?;
                 }
             }

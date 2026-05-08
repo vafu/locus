@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::Write,
     process::{Command as ProcessCommand, Stdio},
 };
@@ -7,7 +8,13 @@ use anyhow::{Context as AnyhowContext, bail};
 use cel::{Context as CelContext, Program as CelProgram, Value as CelValue};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use futures_util::StreamExt;
-use locus_dbus::{GraphReadProxy, GraphResolveProxy, GraphWriteProxy, NONE_STRING};
+use locus_dbus::{
+    BUS_NAME, GraphReadProxy, GraphResolveProxy, GraphWriteProxy, NONE_STRING, WATCH_INTERFACE,
+};
+use zbus::Proxy;
+use zbus::fdo::PropertiesProxy;
+use zbus::proxy::{Builder as ProxyBuilder, CacheProperties};
+use zbus::zvariant::Value;
 
 #[derive(Debug, Parser)]
 #[command(name = "locusctl")]
@@ -36,6 +43,7 @@ enum Command {
     ResolveAll(ResolveArgs),
     FindNearest(FindNearestArgs),
     Watch(WatchArgs),
+    WatchPath(WatchPathArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -185,8 +193,16 @@ struct WatchArgs {
     filter: Option<String>,
     #[arg(long, value_enum, default_value_t = EmitField::Auto)]
     emit: EmitField,
-    #[arg(long = "exec", required = true, num_args = 1.., allow_hyphen_values = true)]
+    #[arg(long = "exec", num_args = 1.., allow_hyphen_values = true)]
     command: Vec<String>,
+}
+
+#[derive(Debug, ClapArgs)]
+struct WatchPathArgs {
+    source: String,
+    path: Vec<String>,
+    #[arg(long)]
+    property: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -368,9 +384,128 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Watch(args) => watch(&connection, &read, args).await?,
+        Command::WatchPath(args) => watch_path(&connection, &read, &resolve, args).await?,
     }
 
     Ok(())
+}
+
+async fn watch_path(
+    connection: &zbus::Connection,
+    read: &GraphReadProxy<'_>,
+    resolve: &GraphResolveProxy<'_>,
+    args: WatchPathArgs,
+) -> anyhow::Result<()> {
+    let object_path = resolve
+        .watch_node(&args.source, args.path)
+        .await
+        .context("create Locus watch")?;
+    let watch = ProxyBuilder::<Proxy<'_>>::new(connection)
+        .destination(BUS_NAME)?
+        .path(object_path.as_str())?
+        .interface(WATCH_INTERFACE)?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
+        .context("connect to Locus watch")?;
+
+    let result = if let Some(property) = args.property.as_deref() {
+        stream_watch_property(read, &watch, property).await
+    } else {
+        stream_watch_target(connection, object_path.as_str(), &watch).await
+    };
+
+    let close_result = watch.call::<_, _, ()>("Close", &()).await;
+    result.and(close_result.context("close Locus watch"))
+}
+
+async fn stream_watch_target(
+    connection: &zbus::Connection,
+    object_path: &str,
+    watch: &Proxy<'_>,
+) -> anyhow::Result<()> {
+    print_watch_value(watch.get_property::<String>("Target").await?)?;
+
+    let properties = PropertiesProxy::builder(connection)
+        .destination(BUS_NAME)?
+        .path(object_path)?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
+        .context("connect to watch properties")?;
+    let mut changed = properties.receive_properties_changed().await?;
+
+    loop {
+        tokio::select! {
+            signal = changed.next() => {
+                let Some(signal) = signal else { break; };
+                let args = signal.args()?;
+                let Some(value) = args.changed_properties().get("Target") else {
+                    continue;
+                };
+                print_watch_value(owned_value_string(value)?)?;
+            }
+            result = tokio::signal::ctrl_c() => {
+                result.context("wait for ctrl-c")?;
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn stream_watch_property(
+    read: &GraphReadProxy<'_>,
+    watch: &Proxy<'_>,
+    property: &str,
+) -> anyhow::Result<()> {
+    print_watch_value(watch_property(read, watch, property).await?)?;
+    let mut updated = watch.receive_signal("PropertiesUpdated").await?;
+
+    loop {
+        tokio::select! {
+            signal = updated.next() => {
+                let Some(signal) = signal else { break; };
+                let (changed, removed) = signal
+                    .body()
+                    .deserialize::<(HashMap<String, String>, Vec<String>)>()?;
+                if let Some(value) = changed.get(property) {
+                    print_watch_value(value)?;
+                } else if removed.iter().any(|key| key == property) {
+                    print_watch_value("")?;
+                }
+            }
+            result = tokio::signal::ctrl_c() => {
+                result.context("wait for ctrl-c")?;
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn watch_property(
+    read: &GraphReadProxy<'_>,
+    watch: &Proxy<'_>,
+    property: &str,
+) -> anyhow::Result<String> {
+    let target = watch.get_property::<String>("Target").await?;
+    if target == NONE_STRING {
+        return Ok(String::new());
+    }
+    Ok(none(read.get_property(&target, property).await?).unwrap_or_default())
+}
+
+fn owned_value_string(value: &Value<'_>) -> anyhow::Result<String> {
+    String::try_from(value).map_err(Into::into)
+}
+
+fn print_watch_value(value: impl AsRef<str>) -> anyhow::Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "{}", value.as_ref()).context("write watch value")?;
+    stdout.flush().context("flush watch value")
 }
 
 async fn watch(
@@ -477,7 +612,7 @@ async fn handle_watch_event(
     let payload = event
         .emit(args.emit)
         .context("watch event has no value for selected emit field")?;
-    run_watch_command(args, &event, payload)
+    emit_watch_payload(args, &event, payload)
 }
 
 async fn event_matches(
@@ -567,11 +702,20 @@ fn matches_field(value: Option<&str>, exact: Option<&str>, prefix: Option<&str>)
     true
 }
 
-fn run_watch_command(args: &WatchArgs, event: &WatchEvent, payload: &str) -> anyhow::Result<()> {
-    let Some((program, command_args)) = args.command.split_first() else {
-        bail!("watch command is empty");
-    };
+fn emit_watch_payload(args: &WatchArgs, event: &WatchEvent, payload: &str) -> anyhow::Result<()> {
+    if args.command.is_empty() {
+        println!("{payload}");
+        return Ok(());
+    }
 
+    run_watch_command(args, event, payload)
+}
+
+fn run_watch_command(args: &WatchArgs, event: &WatchEvent, payload: &str) -> anyhow::Result<()> {
+    let (program, command_args) = args
+        .command
+        .split_first()
+        .context("watch command is empty")?;
     let mut child = ProcessCommand::new(program)
         .args(command_args)
         .stdin(Stdio::piped())
