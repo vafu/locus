@@ -88,7 +88,9 @@ impl StaticSnapshot {
         let properties = state
             .properties
             .iter()
-            .filter(|((subject, _), _)| subjects.contains(subject))
+            .filter(|((subject, key), _)| {
+                subjects.contains(subject) && should_persist_property(key)
+            })
             .map(|((subject, key), value)| StaticProperty {
                 subject: subject.clone(),
                 key: key.clone(),
@@ -105,4 +107,11 @@ impl StaticSnapshot {
         fs::write(path, format!("{}\n", serde_json::to_string_pretty(self)?))?;
         Ok(())
     }
+}
+
+fn should_persist_property(key: &str) -> bool {
+    !matches!(
+        key,
+        "active" | "focused" | "urgent" | "external-id" | "source"
+    )
 }

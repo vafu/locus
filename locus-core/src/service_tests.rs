@@ -196,7 +196,48 @@ fn resolve_paths_follow_relation_direction() {
         service
             .resolve_path("workspace:1", &["workspace".to_string()])
             .unwrap(),
-        None
+        Some("window:1".to_string())
+    );
+}
+
+#[test]
+fn resolve_paths_infer_mixed_direction_from_node_kind() {
+    let service = service();
+    set_kind(&service, "window:1", "window");
+    set_kind(&service, "workspace:1", "workspace");
+    set_kind(&service, "project:a", "project");
+    set_kind(&service, "app-instance:codex/1", "app-instance");
+    set_kind(&service, "agent-session:codex/session", "agent-session");
+    service
+        .set_link("window:1", "workspace", "workspace:1")
+        .unwrap();
+    service
+        .set_link("workspace:1", "project", "project:a")
+        .unwrap();
+    service
+        .set_link("window:1", "app-instance", "app-instance:codex/1")
+        .unwrap();
+    service
+        .set_link(
+            "app-instance:codex/1",
+            "agent-session",
+            "agent-session:codex/session",
+        )
+        .unwrap();
+
+    assert_eq!(
+        service
+            .resolve_path(
+                "agent-session:codex/session",
+                &[
+                    "agent-session".to_string(),
+                    "app-instance".to_string(),
+                    "workspace".to_string(),
+                    "project".to_string(),
+                ],
+            )
+            .unwrap(),
+        Some("project:a".to_string())
     );
 }
 

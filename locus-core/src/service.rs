@@ -299,12 +299,12 @@ impl LocusService {
         let span = tracing::trace_span!("core.resolve_path", source, path = ?path);
         let _guard = span.enter();
         let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        resolve_one(&inner.state, source, path)
+        resolve_one(&inner.schema, &inner.state, source, path)
     }
 
     pub fn resolve_all(&self, source: &str, path: &[String]) -> Result<Vec<String>, ServiceError> {
         let inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        Ok(resolve_all(&inner.state, source, path))
+        Ok(resolve_all(&inner.schema, &inner.state, source, path))
     }
 
     pub fn subscribe_resolution(
@@ -313,7 +313,7 @@ impl LocusService {
         path: &[String],
     ) -> Result<Resolution, ServiceError> {
         let mut inner = self.inner.lock().map_err(|_| ServiceError::Poisoned)?;
-        let target = resolve_one(&inner.state, source, path)?;
+        let target = resolve_one(&inner.schema, &inner.state, source, path)?;
         inner
             .resolutions
             .insert((source.to_string(), path.to_vec()), target.clone());
@@ -336,7 +336,7 @@ impl LocusService {
                 .resolutions
                 .get(&(source.clone(), path.clone()))
                 .cloned();
-            let target = resolve_one(&inner.state, &source, &path)?;
+            let target = resolve_one(&inner.schema, &inner.state, &source, &path)?;
             if previous != Some(target.clone()) {
                 inner
                     .resolutions

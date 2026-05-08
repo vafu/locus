@@ -129,6 +129,10 @@ export class LocusDbusClient {
     return this.callRead('GetProperties', new GLib.Variant('(s)', [subject]), '(a{ss})', ([properties]) => properties as Record<string, string>);
   }
 
+  findSubjects(key: PropertyKey, value: string): Promise<NodeId[]> {
+    return this.callRead('FindSubjects', new GLib.Variant('(ss)', [key, value]), '(as)', ([subjects]) => subjects as NodeId[]);
+  }
+
   async resolve(source: NodeId, relations: Relation[]): Promise<OptionalNodeId> {
     return none(await this.callResolve('Resolve', new GLib.Variant('(sas)', [source, relations]), '(s)', ([target]) => target as string));
   }
@@ -290,4 +294,3 @@ export class LocusDbusClient {
     console.log(`[LocusDbus] ${method}${status} +${elapsed}ms`);
   }
 }
-

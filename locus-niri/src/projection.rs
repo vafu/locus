@@ -60,12 +60,9 @@ impl GraphProjection {
     fn project_event(&mut self, event: &Event, mutations: &mut Vec<GraphMutation>) {
         match event {
             Event::WorkspaceUrgencyChanged { id, urgent } => {
-                self.set_property(
-                    mutations,
-                    workspace_subject(*id),
-                    "urgent",
-                    urgent.to_string(),
-                );
+                if let Some(subject) = self.workspace_subject(*id) {
+                    self.set_property(mutations, subject, "urgent", urgent.to_string());
+                }
             }
             Event::WorkspaceActivated { .. } => {
                 self.project_workspace_activity(mutations);
@@ -128,7 +125,7 @@ impl GraphProjection {
             .cloned()
             .collect::<Vec<_>>();
         for workspace in workspaces {
-            let subject = workspace_subject(workspace.id);
+            let subject = workspace_subject(&workspace);
             self.set_property(
                 mutations,
                 subject.clone(),
@@ -208,9 +205,10 @@ impl GraphProjection {
         window: &niri_ipc::Window,
     ) {
         let window_subject = window_subject(window.id);
-        let next = window
-            .workspace_id
-            .map(|workspace_id| (workspace_subject(workspace_id), window_subject.clone()));
+        let next = window.workspace_id.and_then(|workspace_id| {
+            self.workspace_subject(workspace_id)
+                .map(|workspace| (workspace, window_subject.clone()))
+        });
         let existing = self
             .graph
             .workspace_windows
@@ -246,6 +244,14 @@ impl GraphProjection {
             });
             self.graph.workspace_windows.insert((workspace, window));
         }
+    }
+
+    fn workspace_subject(&self, id: u64) -> Option<String> {
+        self.niri
+            .workspaces
+            .workspaces
+            .get(&id)
+            .map(workspace_subject)
     }
 
     fn remove_window(&mut self, mutations: &mut Vec<GraphMutation>, id: u64) {

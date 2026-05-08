@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use niri_ipc::Workspace;
 use niri_ipc::state::EventStreamState;
 
 pub const WORKSPACE_RELATION: &str = "workspace";
@@ -81,7 +82,8 @@ pub fn state_to_graph(state: &EventStreamState) -> ProjectedGraph {
         .values()
         .filter_map(|window| {
             let workspace_id = window.workspace_id?;
-            Some((workspace_subject(workspace_id), window_subject(window.id)))
+            let workspace = state.workspaces.workspaces.get(&workspace_id)?;
+            Some((workspace_subject(workspace), window_subject(window.id)))
         })
         .collect();
 
@@ -143,12 +145,12 @@ pub fn state_to_graph(state: &EventStreamState) -> ProjectedGraph {
         .values()
         .filter_map(|workspace| {
             let output = workspace.output.as_ref()?;
-            Some((workspace_subject(workspace.id), output_subject(output)))
+            Some((workspace_subject(workspace), output_subject(output)))
         })
         .collect();
 
     for workspace in state.workspaces.workspaces.values() {
-        let subject = workspace_subject(workspace.id);
+        let subject = workspace_subject(workspace);
         insert_property(&mut properties, &subject, "kind", "workspace");
         insert_property(&mut properties, &subject, "source", "niri");
         insert_property(
@@ -364,8 +366,31 @@ fn insert_property(
     properties.insert((subject.to_string(), key.to_string()), value.into());
 }
 
-pub fn workspace_subject(id: u64) -> String {
-    format!("workspace:{id}")
+pub fn workspace_subject(workspace: &Workspace) -> String {
+    let output = workspace.output.as_deref().unwrap_or("unknown-output");
+    let identity = workspace
+        .name
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| workspace.idx.to_string());
+    format!(
+        "workspace:{}/{}",
+        stable_subject_part(output),
+        stable_subject_part(&identity)
+    )
+}
+
+fn stable_subject_part(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 pub fn window_subject(id: u64) -> String {

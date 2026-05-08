@@ -89,6 +89,14 @@ paths:
     from: context:selected
     path: [window, app-instance, agent-session]
 
+  agent-session-workspace:
+    from: agent-session
+    path: [agent-session, app-instance, workspace]
+
+  agent-session-project:
+    from: agent-session
+    path: [agent-session, app-instance, workspace, project]
+
   window-agent-session:
     from: window
     path: [app-instance, agent-session]

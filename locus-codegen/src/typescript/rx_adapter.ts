@@ -25,6 +25,7 @@ export class LocusObservableAdapterBase {
   private readonly propertyCache = new Map<string, Observable<string>>();
   private readonly propertiesCache = new Map<string, Observable<Record<string, string>>>();
   private readonly pathPropertiesCache = new Map<string, Observable<Record<string, string>>>();
+  private readonly findSubjectsCache = new Map<string, Observable<NodeId[]>>();
   private readonly sourcesCache = new Map<string, Observable<NodeId[]>>();
   private readonly targetsCache = new Map<string, Observable<NodeId[]>>();
 
@@ -232,6 +233,37 @@ export class LocusObservableAdapterBase {
         };
       }).pipe(shareReplay(SHARE_REPLAY_ONE));
       this.propertiesCache.set(subject, cached);
+    }
+    return cached;
+  }
+
+  findSubjects$(key: string, value: string): Observable<NodeId[]> {
+    const cache = cacheKey(['find-subjects', key, value]);
+    let cached = this.findSubjectsCache.get(cache);
+    if (!cached) {
+      cached = new Observable<NodeId[]>(subscriber => {
+        const refresh = () => {
+          this.client.findSubjects(key as PropertyKey, value)
+            .then(subjects => subscriber.next(subjects))
+            .catch(error => subscriber.error(error));
+        };
+
+        refresh();
+        const changed = this.client.onPropertyChanged(signal => {
+          if (signal.key === key) refresh();
+        });
+        const removed = this.client.onPropertyRemoved(signal => {
+          if (signal.key === key) refresh();
+        });
+        return () => {
+          changed();
+          removed();
+        };
+      }).pipe(
+        distinctUntilChanged(sameArray),
+        shareReplay(SHARE_REPLAY_ONE),
+      );
+      this.findSubjectsCache.set(cache, cached);
     }
     return cached;
   }

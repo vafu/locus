@@ -197,18 +197,33 @@ fn write_rx_adapter(out: &mut dyn Write, schema: &GraphSchema) -> std::io::Resul
         }
 
         let method = method_name(name);
-        writeln!(
-            out,
-            "  {method}$(): Observable<OptionalNodeId> {{\n    return this.path$({name:?});\n  }}\n"
-        )?;
-        writeln!(
-            out,
-            "  {method}String$(): Observable<string> {{\n    return this.pathString$({name:?});\n  }}\n"
-        )?;
-        writeln!(
-            out,
-            "  {method}Property$(key: string): Observable<string> {{\n    return this.pathProperty$({name:?}, key);\n  }}\n"
-        )?;
+        if schema.nodes().contains_key(&path.source) {
+            writeln!(
+                out,
+                "  {method}$(source: NodeId): Observable<OptionalNodeId> {{\n    return this.path$({name:?}, source);\n  }}\n"
+            )?;
+            writeln!(
+                out,
+                "  {method}String$(source: NodeId): Observable<string> {{\n    return this.pathString$({name:?}, source);\n  }}\n"
+            )?;
+            writeln!(
+                out,
+                "  {method}Property$(source: NodeId, key: string): Observable<string> {{\n    return this.pathProperty$({name:?}, key, source);\n  }}\n"
+            )?;
+        } else {
+            writeln!(
+                out,
+                "  {method}$(): Observable<OptionalNodeId> {{\n    return this.path$({name:?});\n  }}\n"
+            )?;
+            writeln!(
+                out,
+                "  {method}String$(): Observable<string> {{\n    return this.pathString$({name:?});\n  }}\n"
+            )?;
+            writeln!(
+                out,
+                "  {method}Property$(key: string): Observable<string> {{\n    return this.pathProperty$({name:?}, key);\n  }}\n"
+            )?;
+        }
     }
     writeln!(out, "}}\n")?;
     writeln!(
